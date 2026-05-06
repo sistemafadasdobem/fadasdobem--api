@@ -8,6 +8,13 @@ const chatwootAiHistory = require('./chatwoot.aiHistory');
 const openaiService = require('../openai/openai.service');
 const anthropicService = require('../anthropic/anthropic.service');
 
+/** `CHATWOOT_WEBHOOK_LOG=false` silencia estes logs (útil em PRD muito ruidosa). */
+function chatwootWebhookLog(summary, fields = {}) {
+  if (process.env.CHATWOOT_WEBHOOK_LOG === 'false') return;
+  const extra = Object.keys(fields).length ? ` ${JSON.stringify(fields)}` : '';
+  console.log(`[chatwoot:webhook] ${summary}${extra}`);
+}
+
 function extractPayloadShape(body) {
   const envelope = typeof body?.payload !== 'undefined' ? body.payload : body;
   return envelope || {};
@@ -359,6 +366,7 @@ async function processWebhookEnvelopeImpl(rawBody) {
   const parsed = extractPayloadShape(envelope);
 
   if (!event || !isMessageCreatedEvent(event)) {
+    chatwootWebhookLog('skipped', { why: 'evento_nao_message_created', event: event || null });
     return { skipped: true, reason: 'evento não é message_created' };
   }
 
@@ -367,16 +375,24 @@ async function processWebhookEnvelopeImpl(rawBody) {
   const contactId = extractContactId(parsed);
 
   if (!conversationId || !contactId) {
+    chatwootWebhookLog('skipped', {
+      why: 'ids_ausentes',
+      conversationId: conversationId || null,
+      contactId: contactId || null,
+    });
     return { skipped: true, reason: 'ids ausentes' };
   }
   if (!isIncomingVisitorMessage(parsed)) {
+    chatwootWebhookLog('skipped', { why: 'mensagem_nao_inbound_contact', conversationId });
     return { skipped: true, reason: 'ignoramos mensagens de agente/outgoing ou sender ≠ contact' };
   }
   if (!textContent) {
+    chatwootWebhookLog('skipped', { why: 'sem_texto', conversationId });
     return { skipped: true, reason: 'mensagem sem texto utilizável' };
   }
 
   if (!isChatwootIaAutoReplyEnabled()) {
+    chatwootWebhookLog('skipped', { why: 'CHATWOOT_IA_AUTO_REPLY_off', conversationId });
     return {
       skipped: true,
       reason: 'CHATWOOT_IA_AUTO_REPLY não habilitado (defina true no .env para a IA responder)',
@@ -387,6 +403,11 @@ async function processWebhookEnvelopeImpl(rawBody) {
   const identity = await findUserOrUpsertLeadByChatwoot(contactId, conversationId, parsed);
 
   if (!isInboundContactPhoneAllowedForIa(parsed)) {
+    chatwootWebhookLog('skipped', {
+      why: 'phone_whitelist',
+      conversationId,
+      hint: 'defina CHATWOOT_IA_PHONE_WHITELIST=* ou inclua o dígito do contacto',
+    });
     return {
       skipped: true,
       reason: 'telefone do contacto fora da whitelist de testes IA (CHATWOOT_IA_PHONE_WHITELIST)',
@@ -403,8 +424,33 @@ async function processWebhookEnvelopeImpl(rawBody) {
   const turns = chatwootAiHistory.buildTurnsFromChatwootRows(rows, textContent);
   const { history, latest } = chatwootAiHistory.splitHistoryForGenerateReply(turns);
 
-  const aiService = resolveWebhookAiStrategy();
-  const reply = await aiService.generateReply(history, latest);
+  const provedor = (process.env.ACTIVE_AI_PROVIDER || 'anthropic').trim().toLowerCase();
+  const iaService = resolveWebhookAiStrategy();
+
+  chatwootWebhookLog('ia_request', {
+    conversationId,
+    contactId,
+    identity: identity.kind,
+    provedor,
+    historico_turnos: history.length,
+    ultima_msg_chars: latest.length,
+    chatwoot_rows: rows.length,
+  });
+
+  const t0 = Date.now();
+  const reply = await iaService.generateReply(history, latest);
+  const msIa = Date.now() - t0;
+
+  chatwootWebhookLog('ia_response', {
+    conversationId,
+    provedor,
+    ms: msIa,
+    reply_chars: `${reply || ''}`.length,
+    fallback_ia:
+      `${reply || ''}`.includes('Não consegui contatar') || `${reply || ''}`.includes('nossa IA')
+        ? true
+        : undefined,
+  });
 
   try {
     await chatwootClient.postTextReply(accountId, conversationId, reply);
@@ -418,7 +464,7 @@ async function processWebhookEnvelopeImpl(rawBody) {
     );
   }
 
-  const provedor = (process.env.ACTIVE_AI_PROVIDER || 'anthropic').trim().toLowerCase();
+  chatwootWebhookLog('posted', { conversationId });
 
   return {
     replied: true,
