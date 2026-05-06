@@ -84,8 +84,20 @@ app.use(errorHandlerMiddleware);
 async function start() {
   try {
     await sequelize.authenticate();
-    if (process.env.SEQUELIZE_SYNC === 'true') {
-      await sequelize.sync({ alter: false });
+    const syncExplicitlyOff = process.env.SEQUELIZE_SYNC === 'false';
+    const useForce = process.env.SEQUELIZE_SYNC_FORCE === 'true';
+
+    const shouldSync = !syncExplicitlyOff || useForce;
+
+    if (shouldSync) {
+      if (useForce) {
+        console.warn(
+          '[sequelize] sequelize.sync({ force: true }) irá APAGAR e recriar todas as tabelas.'
+        );
+        await sequelize.sync({ force: true });
+      } else {
+        await sequelize.sync({ alter: true });
+      }
     }
     warmupAssistantsSilent().catch((e) =>
       console.warn('[openai.setup] Aquecimento do assistente ignorado:', e.message)

@@ -69,6 +69,70 @@ function extractLeadPhone(parsed) {
   return meta ? meta.slice(0, 32) : null;
 }
 
+/** Whitelist por defeito (testes) — altere `.env`: `CHATWOOT_IA_PHONE_WHITELIST=*` para desligar filtro. */
+const DEFAULT_IA_PHONE_WHITELIST_DIGITS = ['71983141335', '5571983141335'];
+
+function phoneDigitsOnly(s) {
+  return String(s || '').replace(/\D/g, '');
+}
+
+/**
+ * @returns {string[] | null} lista de variantes dígitos; `null` = qualquer número permitido para IA.
+ */
+function getIaPhoneWhitelistDigits() {
+  const raw = `${process.env.CHATWOOT_IA_PHONE_WHITELIST ?? ''}`.trim().toLowerCase();
+  if (raw === '*' || raw === 'off' || raw === 'any') return null;
+  if (!process.env.CHATWOOT_IA_PHONE_WHITELIST || raw === '') {
+    return [...DEFAULT_IA_PHONE_WHITELIST_DIGITS];
+  }
+  return raw.split(',').map((p) => phoneDigitsOnly(p.trim())).filter(Boolean);
+}
+
+/** Compara dois conjuntos apenas de dígitos (igual / sufixo / prefixo completo onde fizer sentido). */
+function digitsMatchAllowedVariant(inboundDigits, allowedToken) {
+  if (!inboundDigits || !allowedToken) return false;
+  if (inboundDigits === allowedToken) return true;
+  if (inboundDigits.endsWith(allowedToken)) return true;
+  if (allowedToken.endsWith(inboundDigits) && inboundDigits.length >= 8) return true;
+  return false;
+}
+
+/**
+ * Só deixa a IA responder se o contacto tiver telefone reconhecido na whitelist (quando activa).
+ */
+function isInboundContactPhoneAllowedForIa(parsed) {
+  const tokens = getIaPhoneWhitelistDigits();
+  if (tokens === null) return true;
+  if (!tokens.length) return false;
+
+  const candidates = new Set();
+  for (const v of [
+    extractLeadPhone(parsed),
+    parsed.contact?.phone_number,
+    parsed.sender?.phone_number,
+    parsed.message?.sender?.phone_number,
+    parsed.conversation?.meta?.sender?.phone_number,
+  ]) {
+    const d = phoneDigitsOnly(v);
+    if (d) candidates.add(d);
+  }
+
+  for (const idField of [parsed.contact?.identifier, parsed.sender?.identifier, parsed.message?.sender?.identifier]) {
+    if (!idField) continue;
+    const head = `${idField}`.split('@')[0];
+    const d = phoneDigitsOnly(head);
+    if (d) candidates.add(d);
+  }
+
+  for (const d of candidates) {
+    for (const t of tokens) {
+      if (digitsMatchAllowedVariant(d, t)) return true;
+    }
+  }
+
+  return false;
+}
+
 function mergeUtmData(existing, incoming) {
   const a = existing && typeof existing === 'object' && !Array.isArray(existing) ? { ...existing } : {};
   const b = incoming && typeof incoming === 'object' && !Array.isArray(incoming) ? incoming : {};
@@ -321,6 +385,14 @@ async function processWebhookEnvelopeImpl(rawBody) {
   }
 
   const identity = await findUserOrUpsertLeadByChatwoot(contactId, conversationId, parsed);
+
+  if (!isInboundContactPhoneAllowedForIa(parsed)) {
+    return {
+      skipped: true,
+      reason: 'telefone do contacto fora da whitelist de testes IA (CHATWOOT_IA_PHONE_WHITELIST)',
+      ia_phone_blocked: true,
+    };
+  }
 
   const accountId = `${process.env.CHATWOOT_ACCOUNT_ID || ''}`.trim();
   if (!accountId) {
