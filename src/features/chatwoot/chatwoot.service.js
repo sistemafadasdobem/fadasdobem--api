@@ -8,9 +8,9 @@ const chatwootAiHistory = require('./chatwoot.aiHistory');
 const openaiService = require('../openai/openai.service');
 const anthropicService = require('../anthropic/anthropic.service');
 
-/** `CHATWOOT_WEBHOOK_LOG=false` silencia estes logs (útil em PRD muito ruidosa). */
+/** Logs do webhook: só desliga com CHATWOOT_WEBHOOK_LOG=false (explicito). Omitir env = sempre log por defeito em PRD atual. */
 function chatwootWebhookLog(summary, fields = {}) {
-  if (process.env.CHATWOOT_WEBHOOK_LOG === 'false') return;
+  if (`${process.env.CHATWOOT_WEBHOOK_LOG || ''}`.trim().toLowerCase() === 'false') return;
   const extra = Object.keys(fields).length ? ` ${JSON.stringify(fields)}` : '';
   console.log(`[chatwoot:webhook] ${summary}${extra}`);
 }
@@ -76,23 +76,25 @@ function extractLeadPhone(parsed) {
   return meta ? meta.slice(0, 32) : null;
 }
 
-/** Whitelist por defeito (testes) — altere `.env`: `CHATWOOT_IA_PHONE_WHITELIST=*` para desligar filtro. */
-const DEFAULT_IA_PHONE_WHITELIST_DIGITS = ['71983141335', '5571983141335'];
-
 function phoneDigitsOnly(s) {
   return String(s || '').replace(/\D/g, '');
 }
 
 /**
- * @returns {string[] | null} lista de variantes dígitos; `null` = qualquer número permitido para IA.
+ * Lista de dígitos permitidos apenas quando `CHATWOOT_IA_PHONE_WHITELIST` existe no ambiente e não é wildcard.
+ * **Sem esta variável** → todos os inbound contact são permitidos para a IA (não dependemos de `.env` para funcionar).
+ * Para reativar teste só com um número no futuro, defina a variável ou volte ao hardcode temporário aqui em baixo.
  */
 function getIaPhoneWhitelistDigits() {
-  const raw = `${process.env.CHATWOOT_IA_PHONE_WHITELIST ?? ''}`.trim().toLowerCase();
-  if (raw === '*' || raw === 'off' || raw === 'any') return null;
-  if (!process.env.CHATWOOT_IA_PHONE_WHITELIST || raw === '') {
-    return [...DEFAULT_IA_PHONE_WHITELIST_DIGITS];
+  if (process.env.CHATWOOT_IA_PHONE_WHITELIST === undefined || process.env.CHATWOOT_IA_PHONE_WHITELIST === null) {
+    return null;
   }
-  return raw.split(',').map((p) => phoneDigitsOnly(p.trim())).filter(Boolean);
+  const raw = `${process.env.CHATWOOT_IA_PHONE_WHITELIST}`.trim().toLowerCase();
+  if (raw === '' || raw === '*' || raw === 'off' || raw === 'any') {
+    return null;
+  }
+  const parts = raw.split(',').map((p) => phoneDigitsOnly(p.trim())).filter(Boolean);
+  return parts.length ? parts : null;
 }
 
 /** Compara dois conjuntos apenas de dígitos (igual / sufixo / prefixo completo onde fizer sentido). */

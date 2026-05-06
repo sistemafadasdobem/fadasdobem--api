@@ -4,9 +4,9 @@ const { messagesApiToolDefinitions } = require('../../providers/anthropic/anthro
 const { mergeAdjacentSameRole, ensureOpensWithUser } = require('../chatwoot/chatwoot.aiHistory');
 const { execByName } = require('../openai/openai.functionBridge');
 
-/** `ANTHROPIC_SERVICE_LOG=false` silencia estas linhas. */
+/** Só silencia com ANTHROPIC_SERVICE_LOG=false explícito no env. */
 function anthropicDiagLog(summary, fields = {}) {
-  if (process.env.ANTHROPIC_SERVICE_LOG === 'false') return;
+  if (`${process.env.ANTHROPIC_SERVICE_LOG || ''}`.trim().toLowerCase() === 'false') return;
   const extra = Object.keys(fields).length ? ` ${JSON.stringify(fields)}` : '';
   console.log(`[anthropic:claude] ${summary}${extra}`);
 }
