@@ -48,8 +48,7 @@ module.exports = (sequelize) => {
       idempotency_key: {
         type: DataTypes.STRING(191),
         allowNull: true,
-        unique: true,
-        comment: 'Evita duplicidade em webhooks e retentativas',
+        comment: 'Evita duplicidade em webhooks e retentativas — unicidade via índice parcial',
       },
       description: { type: DataTypes.STRING(512), allowNull: true },
       metadata: { type: DataTypes.JSONB, allowNull: true },
@@ -77,6 +76,12 @@ module.exports = (sequelize) => {
         { fields: ['debit_account_id'] },
         { fields: ['credit_account_id'] },
         { fields: ['reference_type', 'reference_id'] },
+        {
+          unique: true,
+          name: 'transaction_ledger_idempotency_key_not_null_uidx',
+          fields: ['idempotency_key'],
+          where: sequelize.literal('"idempotency_key" IS NOT NULL'),
+        },
       ],
     }
   );

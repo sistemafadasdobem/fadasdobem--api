@@ -84,21 +84,23 @@ app.use(errorHandlerMiddleware);
 async function start() {
   try {
     await sequelize.authenticate();
-    const syncExplicitlyOff = process.env.SEQUELIZE_SYNC === 'false';
+
+    // Esquema evolui por `migrations/` (`npm start` corre `scripts/run-migrations.js` antes).
+    // SEQUELIZE_SYNC=true opt-in (dev ou bootstrap manual); evite alter em PRD.
+    const syncOn = process.env.SEQUELIZE_SYNC === 'true';
     const useForce = process.env.SEQUELIZE_SYNC_FORCE === 'true';
 
-    const shouldSync = !syncExplicitlyOff || useForce;
-
-    if (shouldSync) {
+    if (syncOn || useForce) {
       if (useForce) {
         console.warn(
           '[sequelize] sequelize.sync({ force: true }) irá APAGAR e recriar todas as tabelas.'
         );
         await sequelize.sync({ force: true });
       } else {
-        await sequelize.sync({ alter: true });
+        await sequelize.sync({ alter: process.env.SEQUELIZE_SYNC_ALTER === 'true' });
       }
     }
+
     warmupAssistantsSilent().catch((e) =>
       console.warn('[openai.setup] Aquecimento do assistente ignorado:', e.message)
     );

@@ -4,8 +4,9 @@
   "description": "API REST — Fadas do Bem (consultas ao vivo)",
   "main": "app.js",
   "scripts": {
-    "start": "node app.js",
-    "dev": "node --watch app.js"
+    "migrate": "node scripts/run-migrations.js",
+    "start": "node scripts/run-migrations.js && node app.js",
+    "dev": "node scripts/run-migrations.js && node --watch app.js"
   },
   "engines": {
     "node": ">=18"
