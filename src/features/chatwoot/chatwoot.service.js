@@ -1,10 +1,10 @@
 const axios = require('axios');
-const crypto = require('crypto');
 const { UniqueConstraintError } = require('sequelize');
-const { User } = require('../../models');
+const { User, Lead } = require('../../models');
 const AppError = require('../../utils/AppError');
 const { catchAsyncService } = require('../../utils/catchAsync.util');
 const chatwootClient = require('../../providers/chatwoot/chatwoot.client');
+const chatwootAiHistory = require('./chatwoot.aiHistory');
 const openaiService = require('../openai/openai.service');
 const anthropicService = require('../anthropic/anthropic.service');
 
@@ -60,9 +60,122 @@ function extractInboundText(parsed) {
   return '';
 }
 
-function resolveActiveAiProvider() {
+function extractLeadPhone(parsed) {
+  const c = `${parsed.contact?.phone_number ?? ''}`.trim();
+  if (c) return c.slice(0, 32);
+  const m = `${parsed.sender?.phone_number ?? ''}`.trim();
+  if (m) return m.slice(0, 32);
+  const meta = `${parsed.conversation?.meta?.sender?.phone_number ?? ''}`.trim();
+  return meta ? meta.slice(0, 32) : null;
+}
+
+function mergeUtmData(existing, incoming) {
+  const a = existing && typeof existing === 'object' && !Array.isArray(existing) ? { ...existing } : {};
+  const b = incoming && typeof incoming === 'object' && !Array.isArray(incoming) ? incoming : {};
+  return { ...a, ...b };
+}
+
+function parseUtmFromUrl(urlStr) {
+  const out = {};
+  if (!urlStr || typeof urlStr !== 'string') return out;
+  try {
+    const u = new URL(urlStr, 'https://placeholder.invalid');
+    for (const [k, v] of u.searchParams.entries()) {
+      const lower = k.toLowerCase();
+      if (
+        lower.startsWith('utm_') ||
+        lower === 'gclid' ||
+        lower === 'fbclid' ||
+        lower === 'msclkid'
+      ) {
+        out[k] = v;
+      }
+    }
+  } catch {
+    // URL inválida — ignorar
+  }
+  return out;
+}
+
+/**
+ * Extrai parâmetros de campanha / atribuição de contacto, mensagem ou conversa.
+ */
+function extractUtmPayloadFromWebhook(parsed) {
+  const merged = {};
+
+  const conv = parsed.conversation || {};
+  const addl = conv.additional_attributes || {};
+  const refCandidates = [
+    addl.referer,
+    addl.referrer,
+    addl.ref_url,
+    conv.referer,
+    parsed.contact?.additional_attributes?.referer_url,
+    parsed.contact?.additional_attributes?.referrer,
+  ].filter(Boolean);
+
+  for (const url of refCandidates) {
+    Object.assign(merged, parseUtmFromUrl(`${url}`));
+  }
+
+  const custom = parsed.contact?.custom_attributes;
+  if (custom && typeof custom === 'object') {
+    for (const [key, raw] of Object.entries(custom)) {
+      const lk = `${key}`.toLowerCase();
+      if (
+        lk.startsWith('utm_') ||
+        lk === 'gclid' ||
+        lk === 'fbclid' ||
+        lk === 'msclkid'
+      ) {
+        merged[key] = raw;
+      }
+    }
+  }
+
+  const msg = parsed.message || parsed;
+  const ma = msg?.additional_attributes;
+  if (ma && typeof ma === 'object' && ma.utm && typeof ma.utm === 'object') {
+    Object.assign(merged, ma.utm);
+  }
+
+  return merged;
+}
+
+/**
+ * Canal macro (source) deduzido da caixa ou metadatos.
+ */
+function extractSourceChannelFromWebhook(parsed) {
+  const ca = parsed.contact?.custom_attributes;
+  if (ca && typeof ca.source === 'string' && ca.source.trim()) {
+    return ca.source.trim().slice(0, 64);
+  }
+
+  const inbox = parsed.inbox || parsed.conversation?.inbox;
+  const raw = `${inbox?.channel_type || inbox?.type || ''}`.toLowerCase();
+  if (raw.includes('whatsapp')) return 'whatsapp';
+  if (raw.includes('telegram')) return 'telegram';
+  if (raw.includes('facebook')) return 'facebook';
+  if (raw.includes('instagram')) return 'instagram';
+  if (raw.includes('line')) return 'line';
+  if (raw.includes('sms') || raw.includes('twilio')) return 'sms';
+  if (raw.includes('email') || raw.includes('mail')) return 'email';
+  if (raw.includes('widget') || raw.includes('web')) return 'website_widget';
+
+  if (parsed.conversation?.additional_attributes?.browser_language) {
+    return 'website_widget';
+  }
+
+  return 'direct';
+}
+
+/**
+ * Strategy de IA no webhook: mesma interface `generateReply(historico, mensagemUsuario)`.
+ */
+function resolveWebhookAiStrategy() {
   const raw = (process.env.ACTIVE_AI_PROVIDER || 'anthropic').trim().toLowerCase();
-  if (raw === 'openai' || raw === 'anthropic') return raw;
+  if (raw === 'anthropic') return anthropicService;
+  if (raw === 'openai') return openaiService;
   throw new AppError(
     `Configuração ACTIVE_AI_PROVIDER inválida ("${process.env.ACTIVE_AI_PROVIDER}"). Use openai ou anthropic.`,
     500,
@@ -71,7 +184,28 @@ function resolveActiveAiProvider() {
   );
 }
 
-/** Liga/desliga envio da resposta IA ao Chatwoot (`true`/`1`/`yes`/`on` = ativo). Vazio ou `false` = inativo (útil em dev). */
+async function fetchWebhookConversationRows(accountId, conversationId) {
+  const n = Number(process.env.CHATWOOT_IA_HISTORY_N);
+  const targetCount = Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), 100) : 30;
+  try {
+    return await chatwootClient.fetchRecentConversationMessagesAscending(
+      accountId,
+      conversationId,
+      targetCount
+    );
+  } catch (err) {
+    if (!axios.isAxiosError(err)) throw err;
+    const st = err.response?.status;
+    const hint =
+      st === 401 || st === 403
+        ? 'Token ou permissões insuficientes para ler mensagens no Chatwoot.'
+        : 'Não foi possível obter o histórico desta conversa no Chatwoot.';
+    const statusCode = typeof st === 'number' && st >= 400 && st < 600 ? (st === 404 ? 404 : 502) : 502;
+    throw new AppError(hint, statusCode, null, true);
+  }
+}
+
+/** Liga/desliga envio da resposta IA ao Chatwoot (`true`/`1`/`yes`/`on` = ativo). */
 function isChatwootIaAutoReplyEnabled() {
   const raw = `${process.env.CHATWOOT_IA_AUTO_REPLY || ''}`.trim().toLowerCase();
   if (!raw) return false;
@@ -79,51 +213,81 @@ function isChatwootIaAutoReplyEnabled() {
   return ['true', '1', 'yes', 'on'].includes(raw);
 }
 
-/** E-mail sintético único: modelo `User` exige email + validação isEmail até haver cadastro completo. */
-function buildProvisionalEmailForChatwoot(contactId) {
-  const h = crypto.createHash('sha256').update(String(contactId), 'utf8').digest('hex');
-  return `chatwoot.${h.slice(0, 48)}@provisional.fadasdobem.app`;
-}
-
 /**
- * Garante mapeamento contact_id ↔ User: cadastro provisório CLIENTE se ainda não existir.
+ * Sem `User` para o contacto Chatwoot: garante `Lead` (findOrCreate) com origem/inactividade atualizadas.
+ *
+ * @returns {{ kind: 'user', user: import('sequelize').Model }}
+ *          | {{ kind: 'lead', lead: import('sequelize').Model }}
  */
-async function findOrCreateUserByChatwootContact(contactId, conversationId) {
-  const cid = String(contactId);
-  let user = await User.findOne({
+async function findUserOrUpsertLeadByChatwoot(contactId, conversationId, parsed) {
+  const cid = `${contactId}`.trim();
+  const conv = `${conversationId || ''}`.trim();
+
+  const user = await User.findOne({
+    where: { chatwoot_contact_id: cid },
+  });
+  if (user) {
+    if (conv) {
+      await user.update({ chatwoot_conversation_id: conv });
+    }
+    return { kind: 'user', user };
+  }
+
+  const source = extractSourceChannelFromWebhook(parsed);
+  const utmPatch = extractUtmPayloadFromWebhook(parsed);
+  const phone = extractLeadPhone(parsed);
+  const now = new Date();
+
+  let lead = await Lead.findOne({
     where: { chatwoot_contact_id: cid },
   });
 
-  if (user) {
-    await user.update({ chatwoot_conversation_id: String(conversationId) });
-    return user;
+  if (lead) {
+    const nextUtm = mergeUtmData(lead.utm_data, utmPatch);
+    await lead.update({
+      chatwoot_conversation_id: conv || lead.chatwoot_conversation_id,
+      last_interaction_at: now,
+      source: source !== 'direct' ? source : lead.source,
+      utm_data: nextUtm,
+      phone: phone || lead.phone,
+    });
+    return { kind: 'lead', lead };
   }
 
-  const email = buildProvisionalEmailForChatwoot(cid);
-
   try {
-    user = await User.create({
-      email,
-      password_hash: null,
-      role: 'CLIENTE',
+    lead = await Lead.create({
       chatwoot_contact_id: cid,
-      chatwoot_conversation_id: String(conversationId),
+      chatwoot_conversation_id: conv || null,
+      phone,
+      status: 'NEW',
+      source,
+      utm_data: utmPatch,
+      last_interaction_at: now,
     });
-    return user;
   } catch (err) {
     if (err instanceof UniqueConstraintError) {
-      user = await User.findOne({ where: { chatwoot_contact_id: cid } });
-      if (user) {
-        await user.update({ chatwoot_conversation_id: String(conversationId) });
-        return user;
+      lead = await Lead.findOne({ where: { chatwoot_contact_id: cid } });
+      if (lead) {
+        const nextUtm = mergeUtmData(lead.utm_data, utmPatch);
+        await lead.update({
+          chatwoot_conversation_id: conv || lead.chatwoot_conversation_id,
+          last_interaction_at: now,
+          source: source !== 'direct' ? source : lead.source,
+          utm_data: nextUtm,
+          phone: phone || lead.phone,
+        });
+        return { kind: 'lead', lead };
       }
     }
     throw err;
   }
+
+  return { kind: 'lead', lead };
 }
 
 /**
- * Fluxo webhook Chatwoot → IA (OpenAI **ou** Anthropic, Strategy via env) → resposta ao canal.
+ * Fluxo webhook Chatwoot → IA (OpenAI **ou** Anthropic) → resposta ao canal.
+ * Contactos sem `User` são materializados como `Lead` (paranoid) até à conversão formal.
  */
 async function processWebhookEnvelopeImpl(rawBody) {
   const envelope = typeof rawBody === 'object' ? rawBody : {};
@@ -156,25 +320,19 @@ async function processWebhookEnvelopeImpl(rawBody) {
     };
   }
 
-  const user = await findOrCreateUserByChatwootContact(contactId, conversationId);
+  const identity = await findUserOrUpsertLeadByChatwoot(contactId, conversationId, parsed);
 
   const accountId = `${process.env.CHATWOOT_ACCOUNT_ID || ''}`.trim();
   if (!accountId) {
     throw new AppError('CHATWOOT_ACCOUNT_ID não configurado.', 500, null, true);
   }
 
-  const provider = resolveActiveAiProvider();
-  let reply;
+  const rows = await fetchWebhookConversationRows(accountId, conversationId);
+  const turns = chatwootAiHistory.buildTurnsFromChatwootRows(rows, textContent);
+  const { history, latest } = chatwootAiHistory.splitHistoryForGenerateReply(turns);
 
-  if (provider === 'openai') {
-    reply = await openaiService.replyForUserPlainText(user, textContent);
-  } else {
-    reply = await anthropicService.generateReplyFromChatwootConversation(
-      accountId,
-      conversationId,
-      textContent
-    );
-  }
+  const aiService = resolveWebhookAiStrategy();
+  const reply = await aiService.generateReply(history, latest);
 
   try {
     await chatwootClient.postTextReply(accountId, conversationId, reply);
@@ -188,10 +346,14 @@ async function processWebhookEnvelopeImpl(rawBody) {
     );
   }
 
+  const provedor = (process.env.ACTIVE_AI_PROVIDER || 'anthropic').trim().toLowerCase();
+
   return {
     replied: true,
-    provedor_ia: provider,
-    userId: user.id,
+    provedor_ia: provedor,
+    identity_kind: identity.kind,
+    userId: identity.kind === 'user' ? identity.user.id : null,
+    leadId: identity.kind === 'lead' ? identity.lead.id : null,
     conversationId,
   };
 }
@@ -200,4 +362,5 @@ const processWebhookEnvelope = catchAsyncService(processWebhookEnvelopeImpl);
 
 module.exports = {
   processWebhookEnvelope,
+  findUserOrUpsertLeadByChatwoot,
 };

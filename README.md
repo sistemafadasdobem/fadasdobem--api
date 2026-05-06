@@ -2,6 +2,8 @@
 
 Pacote **`fadasdobem--api`** (Node.js, Express, Sequelize e PostgreSQL). Este ficheiro é a **entrada oficial** ao repositório da API para execução local, visão da estrutura de código e **contrato técnico consolidado da Fase 1** (domínio de dados).
 
+**Estado atual (homologação / Easypanel):** a **Fase 1 — fundação** e a **Fase 2 — autenticação e vitrine** da API encontram‑se **concluídas**. O detalhe de estado de entrega, módulos entregues e backlog associado está em **[`src/documentacao/README.md`](./src/documentacao/README.md)**.
+
 ---
 
 ## Requisitos e execução
@@ -36,6 +38,10 @@ Para **separação de preocupações** e **manutenibilidade**:
 - **`src/documentacao`** — Documentação mantida ao lado da implementação. A especificação **campo a campo** do modelo persistido encontra-se em **`src/documentacao/models/`** e em **`Relacionamentos_FKs.md`** (ver também [Documentação complementar](./src/documentacao/README.md)).
 - **`src/config`**, **`src/middlewares`**, **`src/utils`**, **`src/models`** — Configuração, cruzamentos HTTP transversais, utilitários e modelos Sequelize alinhados ao esquema.
 
+### Estratégia Lead → Cliente (pré-pagamento)
+
+Contactos que chegam pelo **Chatwoot** sem conta em `users` são persistidos na tabela **`leads`** (*soft delete*), com `source`, `utm_data` (JSONB) e `last_interaction_at`. O webhook de mensagem **não** cria mais utilizador provisório: deduplica por `chatwoot_contact_id`, actualiza a conversa corrente e alimenta a IA (OpenAI usa o próprio registo `Lead` para *Threads*; Anthropic lê o histórico via API Chatwoot). A conversão formal (`convertLeadToClient` em `auth.service.js`) cria `User` + `Client`, copia `chatwoot_*` e `openai_thread_id`, marca o *lead* como `CONVERTED` e reconcilia `sessions` pelo `chatwoot_conversation_id` quando aplicável. Detalhe: [`src/documentacao/models/Lead.md`](./src/documentacao/models/Lead.md).
+
 ---
 
 ## Contrato técnico — Fase 1 (modelo de dados)
@@ -50,6 +56,7 @@ Ambientes compatíveis com Mermaid renderizam o bloco diretamente.
 
 ```mermaid
 erDiagram
+  leads }o--o| users : "apos_conversao_chatwoot_contact_id"
   users ||--o| clients : "perfil cliente"
   users ||--o| specialists : "perfil especialista"
   users ||--o| staff_profiles : "gestoras e atendentes"
@@ -94,6 +101,7 @@ erDiagram
 |**`user_devices`**|Registro de aparelhos e tokens para notificações (push), com auditoria por dispositivo.|
 |**`staff_profiles`**|Dados corporativos de **Gestoras** e **Atendentes**, separados do perfil público de clientes e especialistas.|
 |**`clients`**|Perfil da **cliente** com dados progressivos de cadastro (inclui endereços e LGPD sócio-técnica via `users`) e vínculo com **níveis de precificação** e exceções comerciais acordadas com a Gestora.|
+|**`leads`**|Prospectos **Chatwoot** antes da conta cliente: estado de funil, origem/`utm`, rascunho PIX opcional (*paranóico*, apto remarketing); conversão cria linha em `users`/`clients` alinhando o mesmo `chatwoot_contact_id`.|
 |**`specialists`**|Perfil público-operacional das **tarólogas**, incluindo vitrine (bio, PIX), disponibilidade, integrações (**Chatwoot**, **Intelbras**, **Agora**) e **trava de pré-reserva** para evitar conflitos no checkout.|
 |**`specialist_modalities`**|Define quais canais (**texto**, **voz**, **vídeo**) cada especialista atende, alimentando matching e filas.|
 |**`oracles`** e **`specialist_oracles`**|Catálogo editorial de **oráculos** e vínculos N:M com as especialistas, para vitrine filtrável e relatórios.|

@@ -9,6 +9,7 @@ Fonte declarada em código: associações em `src/models/index.js` **e** conven�
 
 ```mermaid
 erDiagram
+  leads }o--o| users : mesmo_chatwoot_contact_apos_conversao
   users ||--o| clients : perfil-cliente-(1-a-1)
   users ||--o| specialists : perfil-tarologa
   users ||--o| staff_profiles : perfil-interno
@@ -31,12 +32,15 @@ erDiagram
   specialists ||--|{ payout_requests : repasses
 ```
 
+> **Nota `leads` → `sessions`:** não existe FK física. Um *lead* só se liga a **`sessions`** indirectamente: na **conversão** preenchem-se `users.chatwoot_contact_id` / `users.chatwoot_conversation_id`; `sessions` continuam a partir de `clients` via `sessions.client_id`. Quando existir `chatwoot_conversation_id` igual ao do *lead* resolvido na conversão, a rotina transaccional pode **actualizar** linhas de `sessions` já criadas para apontar para o novo `clients.id`.
+
 ---
 
 ## Matriz de colunas FK (lógicas)
 
 | Tabela origem | Coluna | Card. | Referência esperada |
 |---------------|--------|-------|---------------------|
+| `leads` | — | — | Sem FK para `users` (*match* lógico por `chatwoot_contact_id` após conversão) |
 | `clients` | `user_id` | N:1 | `users.id` |
 | `clients` | `pricing_level_id` | N:1 | `pricing_levels.id` |
 | `specialists` | `user_id` | N:1 | `users.id` |
@@ -89,6 +93,7 @@ Registros com `deleted_at` preenchido **não devem impedir reuso de chaves de ne
 | `payment_orders` | `idempotency_key_internal` | Idempotência interna apenas quando campo preenchido |
 | `sessions` | `magic_link_token` | Token curto apenas quando existe |
 | `reviews` | `session_id` | Uma avaliação ativa máxima por sessão |
+| `leads` | `chatwoot_contact_id` | Único entre *leads* com `deleted_at` nulo |
 
 > **PostgreSQL apenas:** esse padrão exige DDL parcial compatível (`CREATE UNIQUE INDEX ... WHERE ...`). Se outro dialecto aparecer futuramente, re-adaptar migrações.
 
@@ -107,6 +112,7 @@ Registros com `deleted_at` preenchido **não devem impedir reuso de chaves de ne
 
 - `minute_price_applied_snapshot`, `specialist_commission_pct_snapshot`, `platform_fee_amount_snapshot` e `specialist_commission_amount_snapshot` congelam o contrato financeiro vigente no encerramento.
 - `ended_reason_code` enumera fechamentos operacionais (hard cut saldo, timeout, desconexão, etc.).
+- **Vínculo com aquisição (*lead*):** após `convertLeadToClient`, linhas futuras ou existentes com o mesmo `chatwoot_conversation_id` podem ser reconciliadas ao `clients.id` correcto na transaccão de conversão; o rasto de marketing permanece na linha histórica `leads`.
 
 ### Ledger
 

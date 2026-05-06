@@ -1,9 +1,7 @@
-const axios = require('axios');
 const { getAnthropicClient } = require('../../providers/anthropic/anthropic.client');
 const prompts = require('../../providers/anthropic/anthropic.prompts');
 const { messagesApiToolDefinitions } = require('../../providers/anthropic/anthropic.tools');
-const chatwootClient = require('../../providers/chatwoot/chatwoot.client');
-const AppError = require('../../utils/AppError');
+const { mergeAdjacentSameRole, ensureOpensWithUser } = require('../chatwoot/chatwoot.aiHistory');
 const { execByName } = require('../openai/openai.functionBridge');
 
 function defaultModelId() {
@@ -13,99 +11,6 @@ function defaultModelId() {
 function maxTokens() {
   const raw = Number(process.env.ANTHROPIC_MAX_TOKENS);
   return Number.isFinite(raw) && raw > 0 ? raw : 2048;
-}
-
-function stripHtml(raw) {
-  if (raw == null) return '';
-  return String(raw)
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function normalizeWhitespace(s) {
-  return stripHtml(s).replace(/\s+/g, ' ').trim().toLowerCase();
-}
-
-function mergeAdjacentSameRole(items) {
-  const out = [];
-  for (const item of items) {
-    const prev = out[out.length - 1];
-    if (prev && prev.role === item.role) {
-      prev.content = `${prev.content}\n\n${item.content}`.trim();
-    } else {
-      out.push({ role: item.role, content: item.content });
-    }
-  }
-  return out;
-}
-
-function mapChatwootRowToClaudeTurn(m) {
-  if (!m || m.private) return null;
-  if (Number(m.message_type) === 2) return null;
-  const body = stripHtml(m.content || m.processed_message_content || '');
-  if (!body.trim()) return null;
-  if (Number(m.message_type) === 0) {
-    return { role: 'user', content: body.trim() };
-  }
-  if (Number(m.message_type) === 1) {
-    return { role: 'assistant', content: body.trim() };
-  }
-  return null;
-}
-
-function ensureClaudeOpensWithUser(turns) {
-  const cloned = [...turns];
-  while (cloned.length && cloned[0].role === 'assistant') {
-    cloned.shift();
-  }
-  if (!cloned.length) {
-    cloned.push({
-      role: 'user',
-      content: '[Sistema] Início da conversa — contextualize com acolhimento até o próximo texto do visitante.',
-    });
-  }
-  return cloned;
-}
-
-async function fetchChatwootHistoryForAnthropic(accountId, conversationId) {
-  const n = Number(process.env.CHATWOOT_IA_HISTORY_N);
-  const targetCount = Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), 100) : 30;
-  try {
-    return await chatwootClient.fetchRecentConversationMessagesAscending(
-      accountId,
-      conversationId,
-      targetCount
-    );
-  } catch (err) {
-    if (!axios.isAxiosError(err)) throw err;
-    const st = err.response?.status;
-    const hint =
-      st === 401 || st === 403
-        ? 'Token ou permissões insuficientes para ler mensagens no Chatwoot.'
-        : 'Não foi possível obter o histórico desta conversa no Chatwoot.';
-    const statusCode = typeof st === 'number' && st >= 400 && st < 600 ? (st === 404 ? 404 : 502) : 502;
-    throw new AppError(hint, statusCode, null, true);
-  }
-}
-
-function buildAnthropicTurnsFromChatwootRows(rows, latestInboundPlaintext) {
-  const mapped = [];
-  for (const row of rows) {
-    const turn = mapChatwootRowToClaudeTurn(row);
-    if (turn && (turn.role === 'user' || turn.role === 'assistant')) mapped.push(turn);
-  }
-  let merged = mergeAdjacentSameRole(mapped);
-  merged = ensureClaudeOpensWithUser(merged);
-
-  const target = normalizeWhitespace(latestInboundPlaintext);
-  const lastUser = [...merged].reverse().find((m) => m.role === 'user');
-  if (!lastUser || normalizeWhitespace(lastUser.content) !== target) {
-    merged.push({ role: 'user', content: latestInboundPlaintext.trim() });
-    merged = mergeAdjacentSameRole(merged);
-  }
-
-  return ensureClaudeOpensWithUser(merged);
 }
 
 function extractAssistantPlainText(content) {
@@ -120,18 +25,38 @@ function extractAssistantPlainText(content) {
 }
 
 /**
- * Lista mensagens no Chatwoot, monta turnos só com `user` / `assistant` e chama Claude.
- * O system prompt fica apenas no campo `system` da API (nunca no array `messages`).
+ * Paridade com OpenAI: resposta *stateless* a partir de histórico + última mensagem do utilizador.
+ * @param {Array<{ role: 'user' | 'assistant', content: string }>} historico — turnos anteriores (sem duplicar a última).
+ * @param {string} mensagemUsuario — texto inbound corrente.
+ * @returns {Promise<string>}
  */
-async function generateReplyFromChatwootConversation(accountId, conversationId, latestInboundPlaintext) {
-  const rows = await fetchChatwootHistoryForAnthropic(accountId, conversationId);
-  const turns = buildAnthropicTurnsFromChatwootRows(rows, latestInboundPlaintext);
-  return generateReplyFromMessages(turns);
+async function generateReply(historico, mensagemUsuario) {
+  const history = Array.isArray(historico) ? historico : [];
+  const latest = `${mensagemUsuario || ''}`.trim();
+
+  const base = history
+    .filter((m) => m && (m.role === 'user' || m.role === 'assistant'))
+    .map((m) => ({ role: m.role, content: `${m.content}`.trim() }));
+
+  const withLatest = latest ? [...base, { role: 'user', content: latest }] : base;
+  let merged = mergeAdjacentSameRole(withLatest);
+  merged = ensureOpensWithUser(merged);
+
+  return generateReplyFromMessages(merged);
 }
 
 /**
- * Ciclo Messages API + Tool Use: ferramentas sempre enviadas em `tools` (obrigatório para o modelo com tool_use).
- * @param {Array<{ role: 'user' | 'assistant', content: string }>} seedMessages — só user/assistant, texto corrido por turno.
+ * Compatível com a fachada OpenAI (`replyForUserPlainText`) — identidade ignorada no fluxo stateless.
+ * @param {import('sequelize').Model} _identity
+ * @param {string} plaintext
+ */
+async function replyForUserPlainText(_identity, plaintext) {
+  return generateReply([], `${plaintext ?? ''}`);
+}
+
+/**
+ * Ciclo Messages API + Tool Use — `tools` no formato Anthropic (`name`, `description`, `input_schema`).
+ * @param {Array<{ role: 'user' | 'assistant', content: string | Array<object> }>} seedMessages — turnos texto ou blocos já avançados.
  * @returns {Promise<string>}
  */
 async function generateReplyFromMessages(seedMessages) {
@@ -144,7 +69,6 @@ async function generateReplyFromMessages(seedMessages) {
 
   try {
     const client = getAnthropicClient();
-    /** Cópia mutável durante o diálogo (tool_use / tool_result). */
     let messages = (seedMessages || [])
       .filter((m) => m && (m.role === 'user' || m.role === 'assistant'))
       .map((m) => ({
@@ -164,7 +88,7 @@ async function generateReplyFromMessages(seedMessages) {
         model: defaultModelId(),
         max_tokens: maxTokens(),
         system,
-        tools,
+        ...(tools.length ? { tools } : {}),
         messages,
       });
 
@@ -225,6 +149,7 @@ async function generateReplyFromMessages(seedMessages) {
 }
 
 module.exports = {
+  generateReply,
+  replyForUserPlainText,
   generateReplyFromMessages,
-  generateReplyFromChatwootConversation,
 };

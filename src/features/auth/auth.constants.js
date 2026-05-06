@@ -77,6 +77,11 @@ const AUTH_MESSAGES = {
     'Esta conta não possui perfil de cliente editável por esta rota.',
   PROFILE_PATCH_NO_FIELDS:
     'Nenhum campo permitido enviado (nome, tratar_por, data_nascimento).',
+
+  LEAD_NOT_FOUND: 'Lead não encontrado.',
+  LEAD_ALREADY_CONVERTED: 'Este lead já foi convertido em cliente.',
+  CHATWOOT_CONTACT_USER_EXISTS:
+    'Já existe conta de utilizador associada a este contacto Chatwoot; utilize o login.',
 };
 
 function normalizeEmail(email) {

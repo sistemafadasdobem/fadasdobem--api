@@ -22,6 +22,7 @@ const OTP = require('./OTP')(sequelize);
 const RefreshToken = require('./RefreshToken')(sequelize);
 const AuditLog = require('./AuditLog')(sequelize);
 const PlatformIntegration = require('./PlatformIntegration')(sequelize);
+const Lead = require('./Lead')(sequelize);
 
 /* --- Associações: autenticação e perfil --- */
 
@@ -388,6 +389,7 @@ const db = {
   RefreshToken,
   AuditLog,
   PlatformIntegration,
+  Lead,
 };
 
 module.exports = db;

@@ -24,12 +24,13 @@ async function readLatestAssistantText(client, threadId) {
   return flattenAssistantOutput(msg);
 }
 
-async function ensureThread(client, user) {
-  if (user.openai_thread_id) {
-    return user.openai_thread_id;
+async function ensureThread(client, identity) {
+  const existing = `${identity?.openai_thread_id ?? ''}`.trim();
+  if (existing) {
+    return existing;
   }
   const thread = await client.beta.threads.create({});
-  await user.update({ openai_thread_id: thread.id });
+  await identity.update({ openai_thread_id: thread.id });
   return thread.id;
 }
 
@@ -74,13 +75,16 @@ async function runAssistantLoop(client, threadId, assistantId) {
   throw new Error('Timeout aguardando conclusão do Run OpenAI');
 }
 
-async function generateAssistantReply(user, userText) {
+/**
+ * @param {import('sequelize').Model} identity — `User` ou `Lead` com coluna `openai_thread_id`.
+ */
+async function generateAssistantReply(identity, userText) {
   const trimmed = `${userText}`.trim();
   if (!trimmed) return '';
 
   const client = getOpenAiClient();
   const assistantId = await getAssistantId();
-  const threadId = await ensureThread(client, user);
+  const threadId = await ensureThread(client, identity);
 
   await client.beta.threads.messages.create(threadId, {
     role: 'user',
