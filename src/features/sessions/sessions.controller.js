@@ -4,6 +4,15 @@ const sessionsService = require('./sessions.service');
 
 module.exports = {
   /**
+   * POST /api/v1/sessions · Auth Bearer (perfil **cliente**)
+   * Body: `specialist_id`, `modality` (TEXTO|VOZ|VIDEO), opcional `status` (SCHEDULED|READY)
+   */
+  createSession: catchAsyncRoute(async (req, res) => {
+    const dados = await sessionsService.createSession(req.user, req.body || {});
+    return responderSucesso(res, dados, 'Sessão criada.', 201);
+  }),
+
+  /**
    * GET /api/v1/sessions/:id/token · Auth Bearer
    * Query: `role` = `publisher` (taróloga) ou `subscriber`/`audience` (cliente);
    * opcional `expiresIn` ou `expiresInSeconds` (60–86400).

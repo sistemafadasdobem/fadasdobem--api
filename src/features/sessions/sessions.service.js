@@ -1,10 +1,94 @@
 const { Op } = require('sequelize');
+const { randomInt, randomUUID } = require('crypto');
 const { Session, Client, Specialist, LedgerAccount } = require('../../models');
 const AppError = require('../../utils/AppError');
 const { catchAsyncService } = require('../../utils/catchAsync.util');
 const agoraClient = require('../../providers/agora/agora.client');
 const CHRONO = require('./session.constants');
 const telecomManager = require('./telecom.manager');
+
+const SESSION_CREATE_STATUSES = ['SCHEDULED', 'READY'];
+const SESSION_MODALITIES_SET = new Set(['TEXTO', 'VOZ', 'VIDEO']);
+const AGORA_MAX_UID = 2147483647;
+
+/**
+ * Dois UIDs Agora inteiros distintos (intervalo [1, 2^31-1]).
+ * @returns {{ clientUid: number, specialistUid: number }}
+ */
+function pickDistinctAgoraUids() {
+  let a;
+  let b;
+  do {
+    a = randomInt(1, AGORA_MAX_UID);
+    b = randomInt(1, AGORA_MAX_UID);
+  } while (a === b);
+  return { clientUid: a, specialistUid: b };
+}
+
+/**
+ * POST /sessions — cliente autenticado abre sessão (ex.: VIDEO + Agora).
+ * `client_id` na BD é o UUID de `clients`, resolvido pelo `User` autenticado (não confundir com `users.id`).
+ */
+async function createSession(authenticatedUser, body = {}) {
+  const specialistId = `${body.specialist_id ?? body.specialistId ?? ''}`.trim();
+  const modality = `${body.modality ?? ''}`.trim().toUpperCase();
+  const statusRaw = `${body.status ?? ''}`.trim().toUpperCase();
+  const lifecycleStatus =
+    statusRaw && SESSION_CREATE_STATUSES.includes(statusRaw) ? statusRaw : 'READY';
+
+  if (!specialistId) {
+    throw new AppError('specialist_id é obrigatório.', 400, null, true);
+  }
+  if (!SESSION_MODALITIES_SET.has(modality)) {
+    throw new AppError('modality inválida. Use TEXTO, VOZ ou VIDEO.', 400, null, true);
+  }
+
+  const clientRow = await Client.findOne({
+    where: { user_id: authenticatedUser.id },
+    attributes: ['id'],
+    paranoid: true,
+  });
+  if (!clientRow) {
+    throw new AppError('Perfil de cliente não encontrado para este usuário.', 403, null, true);
+  }
+
+  const specialist = await Specialist.findByPk(specialistId, {
+    paranoid: true,
+    attributes: ['id', 'user_id'],
+  });
+  if (!specialist) {
+    throw new AppError('Especialista não encontrada.', 404, null, true);
+  }
+  if (specialist.user_id === authenticatedUser.id) {
+    throw new AppError('Não é possível agendar sessão consigo mesma como especialista.', 400, null, true);
+  }
+
+  const channelName = randomUUID();
+  const { clientUid, specialistUid } = pickDistinctAgoraUids();
+
+  const isVideo = modality === 'VIDEO';
+  const session = await Session.create({
+    client_id: clientRow.id,
+    specialist_id: specialistId,
+    modality,
+    status: lifecycleStatus,
+    telecom_provider: isVideo ? 'AGORA' : null,
+    provider_channel_id: channelName,
+    agora_channel_id: channelName,
+    agora_uid_client: clientUid,
+    agora_uid_specialist: specialistUid,
+    telecom_status: 'PENDING',
+  });
+
+  console.log('[Sessions] criada', {
+    id: session.id,
+    provider_channel_id: channelName,
+    modality,
+    telecom_provider: isVideo ? 'AGORA' : null,
+  });
+
+  return session.get({ plain: true });
+}
 
 /** Resumo seguro para logs (sem expor token ou payloads enormes). */
 function summarizeNcsBodyForLog(body) {
@@ -454,6 +538,7 @@ async function processAgoraNcsWebhookAsync(body) {
 module.exports = {
   clampExpires,
   summarizeNcsBodyForLog,
+  createSession,
   getRtcTokenForAuthenticatedUser,
   processAgoraNcsWebhookAsync,
   billingTickSweepAsync,

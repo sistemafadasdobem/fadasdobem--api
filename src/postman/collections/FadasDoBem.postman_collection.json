@@ -107,6 +107,76 @@
           "response": []
         },
         {
+          "name": "Fase 5 - Sessões e Agora.io",
+          "description": "Criar sessão na BD (canal Agora + UIDs) e pedir token RTC.",
+          "item": [
+            {
+              "name": "1. Criar sessão (VIDEO)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "exec": [
+                      "try {",
+                      "  const j = pm.response.json();",
+                      "  if (j.sucesso && j.dados && j.dados.id) {",
+                      "    pm.environment.set('current_session_id', j.dados.id);",
+                      "    pm.collectionVariables.set('current_session_id', j.dados.id);",
+                      "  }",
+                      "} catch (e) { console.warn(e); }",
+                      ""
+                    ],
+                    "type": "text/javascript"
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{jwt_token}}",
+                    "type": "text"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json",
+                    "type": "text"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"specialist_id\": \"00000000-0000-4000-8000-000000000001\",\n  \"modality\": \"VIDEO\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": "{{api_base_url}}/sessions",
+                "description": "`POST /api/v1/sessions` — JWT de utilizador com perfil Cliente. Corpo: `specialist_id`, `modality`. Opcional: `status` (SCHEDULED|READY). Grava `id` da sessão em `current_session_id` (environment + collection)."
+              },
+              "response": []
+            },
+            {
+              "name": "2. Token Agora (RTC)",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{jwt_token}}",
+                    "type": "text"
+                  }
+                ],
+                "url": "{{api_base_url}}/sessions/{{current_session_id}}/token?expiresIn=3600&role=publisher",
+                "description": "`GET /api/v1/sessions/:id/token` — corre após (1). `role`: publisher (taróloga) ou audience (cliente)."
+              },
+              "response": []
+            }
+          ]
+        },
+        {
           "name": "Sessões — RTC token Agora (auth)",
           "request": {
             "method": "GET",
@@ -117,8 +187,8 @@
                 "type": "text"
               }
             ],
-            "url": "{{api_base_url}}/sessions/{{session_id}}/token?expiresIn=3600&role=publisher",
-            "description": "`GET /api/v1/sessions/:id/token` — requer JWT; sessão deve ter `provider` = AGORA, `channel_name` e `agora_uid_*` preenchidos."
+            "url": "{{api_base_url}}/sessions/{{current_session_id}}/token?expiresIn=3600&role=publisher",
+            "description": "`GET /api/v1/sessions/:id/token` — requer JWT; sessão com `telecom_provider` AGORA e `provider_channel_id` / `agora_uid_*`. Preferir variável `current_session_id` após criar sessão (Fase 5)."
           },
           "response": []
         },
