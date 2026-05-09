@@ -73,20 +73,53 @@
     }
     @media (max-width: 640px) { .video-row { grid-template-columns: 1fr; } }
     .video-box {
+      display: flex;
+      flex-direction: column;
       background: #000;
       border-radius: 8px;
       aspect-ratio: 16/10;
       overflow: hidden;
       border: 1px solid var(--border);
+      min-height: 180px;
     }
     .video-box h3 {
       font-size: 11px;
       margin: 0;
       padding: 6px 8px;
+      flex: 0 0 auto;
       background: #1a222c;
       color: #9aa8b3;
     }
-    .video-box .inner { width: 100%; height: calc(100% - 30px); min-height: 120px; }
+    /* Agora injeta <video> ou <canvas> — precisam de pai com área real */
+    .video-box .inner {
+      flex: 1 1 auto;
+      min-height: 0;
+      width: 100%;
+      position: relative;
+      background: #0a0a0a;
+    }
+    .video-box .inner video,
+    .video-box .inner canvas {
+      width: 100% !important;
+      height: 100% !important;
+      object-fit: cover;
+      display: block;
+      position: absolute;
+      inset: 0;
+    }
+    .video-placeholder {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 10px;
+      text-align: center;
+      font-size: 12px;
+      color: #6b7c88;
+      line-height: 1.45;
+      pointer-events: none;
+    }
     #hardCutOverlay {
       display: none;
       position: fixed;
@@ -163,6 +196,11 @@
       <option value="audience" selected>audience (cliente — UID alinhado ao kick)</option>
       <option value="publisher">publisher (taróloga — outro UID)</option>
     </select>
+    <p class="hint">
+      Com <strong>audience</strong> não há câmara local (caixa “Local” fica preta). O “Remoto” só mostra imagem se
+      <strong>outra pessoa</strong> entrar no <strong>mesmo canal</strong> com <strong>publisher</strong> (outro browser:
+      login da taróloga, mesma sessão/canal, papel publisher). Testar sozinho = dois lados pretos é normal.
+    </p>
     <button type="button" id="btnCall" disabled>3. Iniciar Chamada de Vídeo</button>
     <button type="button" class="secondary" id="btnLeave">Sair do canal</button>
   </fieldset>
@@ -249,6 +287,29 @@
         return m;
       }
 
+      function findLocalVideoTrack(tracks) {
+        if (!tracks || !tracks.length) return null;
+        for (var i = 0; i < tracks.length; i++) {
+          if (tracks[i] && String(tracks[i].trackMediaType || '') === 'video') return tracks[i];
+        }
+        return tracks.length > 1 ? tracks[1] : tracks[0];
+      }
+
+      /** Mensagens quando ainda não há stream (audience não publica; remoto precisa de outro publisher). */
+      function setPreviewPlaceholders(role) {
+        var loc = document.getElementById('local');
+        var rem = document.getElementById('remote');
+        if (role === 'publisher' || role === '') {
+          loc.innerHTML =
+            '<span class="video-placeholder">A pedir câmara/micro… aceita as permissões do browser.</span>';
+        } else {
+          loc.innerHTML =
+            '<span class="video-placeholder">Audience — sem vídeo local (normal). Na outra ponta usa <strong>publisher</strong>.</span>';
+        }
+        rem.innerHTML =
+          '<span class="video-placeholder">Vídeo remoto aparece quando alguém com <strong>publisher</strong> estiver neste canal.</span>';
+      }
+
       function log(msg) {
         var t = new Date().toISOString().slice(11, 23);
         logEl.textContent += '[' + t + '] ' + msg + '\n';
@@ -321,12 +382,26 @@
               '</code> com senha). No servidor, com o mesmo <code>DATABASE_URL</code> da API, corre <code>npm run seed:homolog</code> e volta a carregar esta página.'
           );
         }
+        if (d.homolog_specialist_ready === false && d.homolog_specialist_email) {
+          lines.push(
+            '<strong style="color:#fbbf24">Aviso:</strong> conta <strong>taróloga</strong> homolog não encontrada (<code>' +
+              d.homolog_specialist_email +
+              '</code>). Corre <code>npm run seed:homolog</code> na mesma BD da API.'
+          );
+        }
         lines.push('Base da API usada: <code>' + API_BASE + '</code>');
         lines.push('Agora App ID (do <code>.env</code> do servidor): <code>' + (agoraAppIdFromServer || '(vazio — defina AGORA_APP_ID)') + '</code>');
         if (d.api_version) lines.push('API versão: <code>' + d.api_version + '</code>');
         if (d.homolog_login_email) {
-          lines.push('Login homolog (e-mail): <code>' + d.homolog_login_email + '</code>');
+          lines.push('Cliente homolog (e-mail): <code>' + d.homolog_login_email + '</code> — senha seed: <code>Homolog@2026</code>');
           document.getElementById('email').value = d.homolog_login_email;
+        }
+        if (d.homolog_specialist_email) {
+          lines.push(
+            'Taróloga homolog (e-mail): <code>' +
+              d.homolog_specialist_email +
+              '</code> — senha seed: <code>TarologaHomolog@2026</code> (se não usaste <code>SEED_HOMOLOG_SPECIALIST_PASSWORD</code> no servidor)'
+          );
         }
         if (d.homolog_specialist_id) {
           lines.push('Specialist ID (seed): <code>' + d.homolog_specialist_id + '</code>');
@@ -494,8 +569,10 @@
         }
         await leaveChannel();
 
-        log('A pedir token RTC…');
         var role = document.getElementById('tokenRole').value || 'audience';
+        setPreviewPlaceholders(role);
+
+        log('A pedir token RTC…');
         var tokenUrl =
           apiUrl('/sessions/' + encodeURIComponent(sessionId) + '/token') +
           '?expiresIn=3600&role=' +
@@ -535,15 +612,24 @@
             }
           });
 
+          client.on('user-joined', function (u) {
+            log('Outro utilizador no canal (uid=' + u.uid + '). Se for publisher, o vídeo remoto deve aparecer.');
+          });
+
           client.on('user-published', async function (user, mediaType) {
-            await client.subscribe(user, mediaType);
+            try {
+              await client.subscribe(user, mediaType);
+            } catch (subErr) {
+              log('subscribe falhou: ' + (subErr && subErr.message));
+              return;
+            }
             log('Subscrito remoto uid=' + user.uid + ' tipo=' + mediaType);
-            if (mediaType === 'video') {
+            if (mediaType === 'video' && user.videoTrack) {
               var r = document.getElementById('remote');
               r.innerHTML = '';
-              user.videoTrack.play(r);
+              user.videoTrack.play(r, { fit: 'cover', mirror: false });
             }
-            if (mediaType === 'audio') {
+            if (mediaType === 'audio' && user.audioTrack) {
               user.audioTrack.play();
             }
           });
@@ -559,14 +645,28 @@
           log('Conectado ao canal Agora (join OK).');
 
           if (role === 'publisher' || role === '') {
-            localTracks = await AgoraRTC.createMicrophoneAndCameraTracks();
+            try {
+              localTracks = await AgoraRTC.createMicrophoneAndCameraTracks();
+            } catch (camErr) {
+              log(
+                'Câmara/micro: ' +
+                  (camErr && camErr.message) +
+                  ' — autoriza permissões ou desbloqueia o site em Preferências.'
+              );
+              throw camErr;
+            }
             await client.publish(localTracks);
             var loc = document.getElementById('local');
             loc.innerHTML = '';
-            localTracks[1].play(loc);
+            var vt = findLocalVideoTrack(localTracks);
+            if (vt && typeof vt.play === 'function') {
+              vt.play(loc, { fit: 'cover', mirror: true });
+            } else {
+              log('Não foi possível identificar o track de vídeo local (ordem do SDK diferente?).');
+            }
             log('Publicação local áudio+vídeo (publisher).');
           } else {
-            log('Modo audience — sem publish local (alinha ao UID cliente / Hard Cut).');
+            log('Modo audience — sem publish local. Abre outra janela com publisher para ver vídeo remoto.');
           }
         } catch (e) {
           log('Chamada erro: ' + (e && e.message));

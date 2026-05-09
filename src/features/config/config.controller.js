@@ -27,8 +27,9 @@ const getPublic = catchAsyncRoute(async (req, res) => {
   const specialistEmailNorm = normalizeEmail(specialistUserEmail);
   const specUser = await User.findOne({
     where: { email: specialistEmailNorm },
-    attributes: ['id'],
+    attributes: ['id', 'password_hash'],
   });
+  const homolog_specialist_ready = Boolean(specUser && specUser.password_hash);
   if (specUser) {
     const row = await Specialist.findOne({
       where: { user_id: specUser.id },
@@ -46,6 +47,8 @@ const getPublic = catchAsyncRoute(async (req, res) => {
       api_base_path: '/api/v1',
       homolog_login_email: homologLoginEmail,
       homolog_login_ready,
+      homolog_specialist_email: specialistUserEmail,
+      homolog_specialist_ready,
       homolog_specialist_id: homologSpecialistId,
     },
     'Configuração pública.',
