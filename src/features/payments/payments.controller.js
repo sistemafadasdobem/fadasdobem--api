@@ -23,6 +23,23 @@ module.exports = {
   }),
 
   /**
+   * GET/HEAD — apenas para comprovar que o URL existe (painel MP, proxies, curl).
+   * **As notificações reais são sempre POST** com assinatura `x-signature`.
+   */
+  mercadoPagoWebhookProbeGet(_req, res) {
+    return res.status(200).json({
+      ok: true,
+      recurso: 'mercadopago_webhook',
+      metodo_notificacao: 'POST',
+      path_esperado: '/api/v1/payments/webhook',
+    });
+  },
+
+  mercadoPagoWebhookProbeHead(_req, res) {
+    return res.status(200).end();
+  },
+
+  /**
    * `express.json()` global deve ter parseado o corpo antes do middleware de assinatura.
    * Resposta rápida 200 para o MP não re-tentativas agressivas.
    */

@@ -13,6 +13,12 @@ router.post('/pix', authMiddleware, paymentsController.createPixCheckout);
 router.post('/card', authMiddleware, paymentsController.createCardCheckout);
 
 /**
+ * GET/HEAD — o painel Mercado Pago / easypanel pode testar o URL com GET; as notificações são **POST**.
+ */
+router.get('/webhook', paymentsController.mercadoPagoWebhookProbeGet);
+router.head('/webhook', paymentsController.mercadoPagoWebhookProbeHead);
+
+/**
  * Webhook público Mercado Pago.
  * IMPORTANTE: o corpo JSON já deve estar parseado (ver `express.json()` no `app.js` antes qualquer middleware desta árvore).
  */
