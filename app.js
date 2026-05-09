@@ -16,6 +16,7 @@ const { API_VERSION_SEMVER } = require('./src/config/version');
 /** Motor cronômetro 2+X+2 — varredura de saldo não pode derrubar o processo HTTP. */
 const sessionChrono = require('./src/features/sessions/session.constants');
 const sessionsService = require('./src/features/sessions/sessions.service');
+const { runMigrations } = require('./scripts/run-migrations');
 require('./src/models');
 
 const app = express();
@@ -87,6 +88,7 @@ app.use(errorHandlerMiddleware);
 async function start() {
   try {
     await sequelize.authenticate();
+    await runMigrations();
 
     const billingMs = Math.max(Number(sessionChrono.BILLING_TICK_INTERVAL_MS) || 10000, 1000);
     console.log(`[BillingEngine] Motor de cobrança rodando (${billingMs}ms).`);
@@ -98,7 +100,7 @@ async function start() {
       }
     }, billingMs);
 
-    // Esquema evolui por `migrations/` (`npm start` corre `scripts/run-migrations.js` antes).
+    // Esquema: migrações em `migrations/` correm no arranque (ver `runMigrations()` em `start()`).
     // SEQUELIZE_SYNC=true opt-in (dev ou bootstrap manual); evite alter em PRD.
     const syncOn = process.env.SEQUELIZE_SYNC === 'true';
     const useForce = process.env.SEQUELIZE_SYNC_FORCE === 'true';

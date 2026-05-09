@@ -1,6 +1,9 @@
 /**
  * Executa ficheiros em `../migrations/*.js` por ordem lexicográfica.
  * Estado em `"_schema_migrations"` na base Postgres (nome do ficheiro = chave única).
+ *
+ * Chamado pelo `app.js` ao arranque (funciona com `node app.js` no Easypanel)
+ * e por `npm run migrate` (fecha a ligação no fim).
  */
 const fs = require('fs');
 const path = require('path');
@@ -43,8 +46,11 @@ function listMigrationFiles() {
     .sort();
 }
 
-async function main() {
-  await sequelize.authenticate();
+/**
+ * Aplica migrações pendentes. Não fecha o `sequelize` (para uso embutido no `app.js`).
+ * O caller deve ter já feito `sequelize.authenticate()` antes.
+ */
+async function runMigrations() {
   await ensureMetaTable();
   const done = await appliedNames();
   const files = listMigrationFiles();
@@ -79,18 +85,23 @@ async function main() {
   console.log('[migrations] concluído.');
 }
 
-(async () => {
-  try {
-    await main();
-  } catch (err) {
-    console.error('[migrations] falha:', err);
-    process.exitCode = 1;
-  } finally {
+module.exports = { runMigrations };
+
+if (require.main === module) {
+  (async () => {
     try {
-      await sequelize.close();
-    } catch {
-      // ignore
+      await sequelize.authenticate();
+      await runMigrations();
+    } catch (err) {
+      console.error('[migrations] falha:', err);
+      process.exitCode = 1;
+    } finally {
+      try {
+        await sequelize.close();
+      } catch {
+        // ignore
+      }
+      if (process.exitCode) process.exit(process.exitCode);
     }
-    if (process.exitCode) process.exit(process.exitCode);
-  }
-})();
+  })();
+}

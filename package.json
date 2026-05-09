@@ -5,9 +5,7 @@
   "main": "app.js",
   "scripts": {
     "migrate": "node scripts/run-migrations.js",
-    "prestart": "node scripts/run-migrations.js",
     "start": "node app.js",
-    "predev": "node scripts/run-migrations.js",
     "dev": "node --watch app.js"
   },
   "engines": {
