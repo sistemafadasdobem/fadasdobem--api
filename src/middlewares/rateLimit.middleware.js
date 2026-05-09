@@ -26,6 +26,12 @@ function rateLimitHandler(options) {
   };
 }
 
+/** Homologação / staging: desativar com `AUTH_RATE_LIMIT_DISABLED=true` no `.env` (evita 429 ao alternar cliente/taróloga). */
+function skipAuthRateLimit() {
+  const v = `${process.env.AUTH_RATE_LIMIT_DISABLED || ''}`.trim().toLowerCase();
+  return v === 'true' || v === '1' || v === 'yes';
+}
+
 /**
  * Login / cadastro por IP — 5 / 15 min (R10).
  */
@@ -35,6 +41,7 @@ const loginRegisterIpLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: false,
+  skip: skipAuthRateLimit,
   keyGenerator(req) {
     return `auth-ip:${req.ip || 'unknown'}`;
   },
@@ -50,6 +57,7 @@ const loginEmailLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: false,
+  skip: skipAuthRateLimit,
   keyGenerator(req) {
     const e = normalizeEmail(req.body?.email).trim();
     return e ? `auth-email:${e}` : `auth-email:fallback:${req.ip || ''}`;
