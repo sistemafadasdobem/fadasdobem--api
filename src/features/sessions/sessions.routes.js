@@ -5,6 +5,7 @@ const sessionsController = require('./sessions.controller');
 const router = Router();
 
 router.post('/agora-webhook', sessionsController.receiveAgoraNcsWebhook);
+router.post('/intelbras-webhook', sessionsController.receiveIntelbrasWebhook);
 router.post('/', authMiddleware, sessionsController.createSession);
 router.get('/:id/token', authMiddleware, sessionsController.getRtcJoinToken);
 

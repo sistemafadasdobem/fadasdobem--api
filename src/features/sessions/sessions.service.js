@@ -64,19 +64,20 @@ async function createSession(authenticatedUser, body = {}) {
   }
 
   const channelName = randomUUID();
-  const { clientUid, specialistUid } = pickDistinctAgoraUids();
-
   const isVideo = modality === 'VIDEO';
+  const isVoice = modality === 'VOZ';
+  const { clientUid, specialistUid } = isVideo ? pickDistinctAgoraUids() : { clientUid: null, specialistUid: null };
+
   const session = await Session.create({
     client_id: clientRow.id,
     specialist_id: specialistId,
     modality,
     status: lifecycleStatus,
-    telecom_provider: isVideo ? 'AGORA' : null,
+    telecom_provider: isVideo ? 'AGORA' : isVoice ? 'INTELBRAS' : null,
     provider_channel_id: channelName,
-    agora_channel_id: channelName,
-    agora_uid_client: clientUid,
-    agora_uid_specialist: specialistUid,
+    agora_channel_id: isVideo ? channelName : null,
+    agora_uid_client: isVideo ? clientUid : null,
+    agora_uid_specialist: isVideo ? specialistUid : null,
     telecom_status: 'PENDING',
   });
 
@@ -84,7 +85,7 @@ async function createSession(authenticatedUser, body = {}) {
     id: session.id,
     provider_channel_id: channelName,
     modality,
-    telecom_provider: isVideo ? 'AGORA' : null,
+    telecom_provider: isVideo ? 'AGORA' : isVoice ? 'INTELBRAS' : null,
   });
 
   return session.get({ plain: true });
@@ -391,9 +392,17 @@ async function getRtcTokenForAuthenticatedUser(sessionId, authenticatedUserId, o
     );
   }
 
+  /**
+   * Consulta 1-a-1: cliente e especialista precisam de áudio (e normalmente vídeo).
+   * O token RTC usa sempre `RtcRole.PUBLISHER` para ambos; `role` na query é legado e ignorado.
+   */
   const roleWant = `${opts.role || ''}`.toLowerCase();
-  const rtcRole =
-    roleWant === 'subscriber' || roleWant === 'audience' ? 'audience' : 'publisher';
+  if (roleWant === 'audience' || roleWant === 'subscriber') {
+    console.log(
+      '[Agora:RTC] aviso: query `role=audience|subscriber` ignorada — consulta 1-a-1 usa sempre publisher.'
+    );
+  }
+  const rtcRole = 'publisher';
 
   const expiresSecs = clampExpires(opts.expiresInSeconds);
 
@@ -431,7 +440,7 @@ async function getRtcTokenForAuthenticatedUser(sessionId, authenticatedUserId, o
     appId,
     expires_at_unix: pack.expiresAtUnix,
     expiresAtUnix: pack.expiresAtUnix,
-    /** `publisher` = taróloga (host); `audience`/`subscriber` = cliente */
+    /** Sempre `publisher` (1-a-1) — mesmo UID do cliente ou da taróloga conforme quem pede o token */
     role: rtcRole,
     roleUsed: rtcRole,
     telecom_status: session.telecom_status,
@@ -535,6 +544,136 @@ async function processAgoraNcsWebhookAsync(body) {
   });
 }
 
+function normIntelbrasStr(v) {
+  return `${v ?? ''}`.trim();
+}
+
+function parseIntelbrasWebhookDate(raw) {
+  const s = normIntelbrasStr(raw);
+  if (!s) return null;
+  const d = new Date(s);
+  return Number.isFinite(d.getTime()) ? d : null;
+}
+
+function parseDuracaoSeconds(raw) {
+  if (raw === null || raw === undefined || raw === '') return null;
+  if (typeof raw === 'number' && Number.isFinite(raw)) return Math.max(0, Math.trunc(raw));
+  const n = parseInt(String(raw).trim(), 10);
+  return Number.isFinite(n) ? Math.max(0, n) : null;
+}
+
+function mapIntelbrasCausaToEndedReason(causa) {
+  const c = `${causa ?? ''}`.trim().toUpperCase();
+  if (!c) return 'UNKNOWN';
+  if (c.includes('NORMAL')) return 'NORMAL_COMPLETION';
+  if (c.includes('USER') || c.includes('BUSY') || c.includes('NO ANSWER') || c.includes('CANCEL'))
+    return 'CLIENT_DISCONNECT';
+  return 'UNKNOWN';
+}
+
+/**
+ * @param {Record<string, unknown>} event
+ */
+async function findSessionForIntelbrasWebhook(event) {
+  const ids = [
+    normIntelbrasStr(event.UniqueId ?? event.uniqueId),
+    normIntelbrasStr(event.UniqueId2 ?? event.uniqueId2),
+  ].filter(Boolean);
+  for (const uid of ids) {
+    const row = await Session.findOne({
+      where: {
+        telecom_provider: 'INTELBRAS',
+        [Op.or]: [{ intelbras_unique_id: uid }, { intelbras_call_id: uid }],
+      },
+      paranoid: true,
+      order: [['updated_at', 'DESC']],
+    });
+    if (row) return row;
+  }
+  return null;
+}
+
+/**
+ * Webhook Intelbras Wide Voice — configurar URL pública no painel da central.
+ * Processar de forma assíncrona após HTTP 200 imediato (igual NCS Agora).
+ *
+ * @param {Record<string, unknown>} event
+ */
+async function processIntelbrasTelephonyWebhookAsync(event) {
+  if (!event || typeof event !== 'object' || Array.isArray(event)) return;
+
+  const tipo = normIntelbrasStr(event.Evento ?? event.evento).toUpperCase();
+  const st = normIntelbrasStr(event.Status ?? event.status).toUpperCase();
+
+  const isAnswered =
+    tipo === 'BRIDGE' || tipo === 'ANSWERED' || st === 'ANSWERED';
+
+  const isHangup = tipo === 'HANGUP' || st === 'HANGUP';
+
+  if (!isAnswered && !isHangup) {
+    console.log('[Intelbras:Webhook] evento ignorado', { tipo: tipo || null, status: st || null });
+    return;
+  }
+
+  const session = await findSessionForIntelbrasWebhook(event);
+  if (!session) {
+    console.warn('[Intelbras:Webhook] sessão não encontrada para UniqueId(s)', {
+      UniqueId: event.UniqueId ?? null,
+      UniqueId2: event.UniqueId2 ?? null,
+    });
+    return;
+  }
+
+  if (isAnswered) {
+    if (`${session.telecom_status || ''}`.toUpperCase() === 'COMPLETED') return;
+
+    const atend =
+      parseIntelbrasWebhookDate(event.DataHoraAtendimento ?? event.DataHora) ||
+      (session.started_at ? new Date(session.started_at) : null) ||
+      new Date();
+
+    const uidPrimary = normIntelbrasStr(event.UniqueId ?? event.uniqueId);
+
+    await session.update({
+      telecom_status: 'ACTIVE',
+      started_at: session.started_at || atend,
+      intelbras_unique_id: uidPrimary || session.intelbras_unique_id,
+    });
+
+    console.log('[Intelbras:Webhook] atendimento → ACTIVE', {
+      sessionId: session.id,
+      uniqueId: uidPrimary || null,
+    });
+    return;
+  }
+
+  if (isHangup) {
+    if (session.ended_at) return;
+
+    const endedAt = parseIntelbrasWebhookDate(event.DataHoraFim) || new Date();
+    let durationSec = parseDuracaoSeconds(
+      event.Duracao != null ? event.Duracao : event.duracao
+    );
+    const startedMs = session.started_at ? new Date(session.started_at).getTime() : NaN;
+    if (durationSec === null && Number.isFinite(startedMs)) {
+      durationSec = Math.max(0, Math.floor((endedAt.getTime() - startedMs) / 1000));
+    }
+
+    await session.update({
+      telecom_status: 'COMPLETED',
+      ended_at: endedAt,
+      rtc_duration_seconds: durationSec,
+      rtc_end_reason: event.Causa != null ? String(event.Causa) : null,
+      ended_reason_code: mapIntelbrasCausaToEndedReason(event.Causa),
+    });
+
+    console.log('[Intelbras:Webhook] Hangup → COMPLETED', {
+      sessionId: session.id,
+      rtc_duration_seconds: durationSec,
+    });
+  }
+}
+
 module.exports = {
   clampExpires,
   summarizeNcsBodyForLog,
@@ -544,4 +683,5 @@ module.exports = {
   billingTickSweepAsync,
   /** versão não empacotada do sweep (workers / testes) */
   runBillingTickSweep,
+  processIntelbrasTelephonyWebhookAsync,
 };

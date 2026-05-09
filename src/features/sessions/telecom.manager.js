@@ -1,4 +1,5 @@
 const agoraClient = require('../../providers/agora/agora.client');
+const intelbrasClient = require('../../providers/intelbras/intelbras.client');
 
 /**
  * Estratégia unificada: “como encerrar a mídia” sem acoplar ao motor de bilhetagem.
@@ -38,13 +39,25 @@ async function disconnectSession(session) {
   }
 
   if (prov === 'INTELBRAS') {
-    const detail =
-      '[telecom:Intelbras] AMI/ARI Hangup ainda não implementado — usar `provider_channel_id` / `intelbras_unique_id`.';
-    console.warn(detail, {
-      intelbras_unique_id: session.intelbras_unique_id,
-      provider_channel_id: session.provider_channel_id,
-    });
-    return { ok: false, provider: prov, detail };
+    const uid = `${session.intelbras_unique_id || ''}`.trim();
+    if (!uid) {
+      const detail =
+        '[telecom:Intelbras] disconnectSession — `intelbras_unique_id` vazio (necessário para REST desligar).';
+      console.warn(detail, { sessionId: session.id, provider_channel_id: session.provider_channel_id });
+      return { ok: false, provider: prov, detail };
+    }
+    try {
+      const hang = await intelbrasClient.hangupCall(uid);
+      return {
+        ok: Boolean(hang.ok),
+        provider: prov,
+        detail: hang.ok ? 'AMI Hangup enviado.' : `[telecom:Intelbras] AMI: ${JSON.stringify(hang.raw || hang)}`,
+      };
+    } catch (err) {
+      const detail = `[telecom:Intelbras] Hangup falhou: ${err?.message || err}`;
+      console.error(detail, { sessionId: session.id, uniqueId: uid.slice(0, 64) });
+      return { ok: false, provider: prov, detail };
+    }
   }
 
   if (prov === 'WHATSAPP') {

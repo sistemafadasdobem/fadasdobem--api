@@ -50,6 +50,16 @@ module.exports = (sequelize) => {
         type: DataTypes.DECIMAL(14, 4),
         allowNull: false,
       },
+      /** Bruto confirmado pelo MP (`transaction_amount` no GET /v1/payments). */
+      mp_transaction_amount: {
+        type: DataTypes.DECIMAL(14, 4),
+        allowNull: true,
+      },
+      /** Pacote / tipo de crédito escolhido no checkout (JSON). */
+      checkout_context: {
+        type: DataTypes.JSONB,
+        allowNull: true,
+      },
       currency: {
         type: DataTypes.STRING(3),
         allowNull: false,

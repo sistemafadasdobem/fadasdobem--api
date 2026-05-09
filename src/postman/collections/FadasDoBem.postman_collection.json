@@ -208,6 +208,42 @@
             "description": "`POST /api/v1/sessions/agora-webhook` — o servidor responde 200 imediatamente; ajuste `channelName` e `uid` para corresponder à linha na tabela `sessions`."
           },
           "response": []
+        },
+        {
+          "name": "Fase 5 — Financeiro (Mercado Pago)",
+          "description": "Checkout transparente PIX e cartão (`/api/v1/payments`). JWT de perfil Cliente + `MP_ACCESS_TOKEN` no backend.",
+          "item": [
+            {
+              "name": "Gerar PIX (auth)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{jwt_token}}",
+                    "type": "text"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json",
+                    "type": "text"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"package_id\": \"avulso_demo\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": "{{api_base_url}}/payments/pix",
+                "description": "`POST /api/v1/payments/pix` — ou use `\"amount\": 25.5` em BRL. Opcional: `credit_type` (`AVULSO`|`PACOTE_SESSAO_UNICA`). Resposta: QR copia-e-cola + base64 quando o MP devolver."
+              },
+              "response": []
+            }
+          ]
         }
       ]
     },

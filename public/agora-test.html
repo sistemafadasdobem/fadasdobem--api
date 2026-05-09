@@ -154,12 +154,16 @@
   </style>
 </head>
 <body>
-  <h1>Mini Front — Homologação Agora + API</h1>
+  <h1>Mini Front — Homologação (1-a-1 · RTC publisher)</h1>
   <p class="hint">
-    Modo ideal: abrir <strong>no próprio servidor da API</strong>, ex.
+    <strong>Como testar:</strong> (1) Login <strong>cliente</strong> → Criar sessão → Iniciar chamada (aceita câmara/micro). (2) Noutro browser,
+    login <strong>taróloga</strong> → colar o <code>session_id</code> → Iniciar chamada. Ambos publicam áudio/vídeo; o token vem sempre como
+    <code>publisher</code> pela API.
+  </p>
+  <p class="hint">
+    Sirva esta página no mesmo host que a API ou usa <code>?api=https://…</code>.
     <code id="hintExampleUrl">http://localhost:3000/agora-test.html</code> (porta = <code>PORT</code> no <code>.env</code>).
-    Se abrires o ficheiro em disco (<code>file://</code>) ou com Live Server noutra porta, indica abaixo a <strong>raiz HTTP da API</strong>
-    (ou usa na URL <code>?api=http://localhost:3000</code>).
+    <code>file://</code> ou Live Server noutra porta: preenche <strong>Raiz da API</strong> abaixo.
   </p>
 
   <fieldset>
@@ -179,7 +183,9 @@
     <label>Senha (padrão após <code>npm run seed:homolog</code> — ver <code>.env.example</code>)</label>
     <input type="password" id="password" autocomplete="current-password" />
     <button type="button" id="btnLogin" disabled>1. Fazer Login</button>
-    <p class="hint">Conta <strong>Cliente</strong> criada pelo seed de homologação.</p>
+    <p class="hint">
+      Seeds: <strong>cliente</strong> e <strong>taróloga</strong> — emails no quadro de config após carregar a API; senhas no servidor (<code>.env.example</code> / homolog).
+    </p>
   </fieldset>
 
   <fieldset>
@@ -215,18 +221,15 @@
   </fieldset>
 
   <fieldset>
-    <legend>Passo 3 — Vídeo</legend>
-    <label>Papel no token RTC (Hard Cut no <strong>cliente</strong> → <strong>audience</strong>)</label>
-    <select id="tokenRole">
-      <option value="audience" selected>audience (cliente — UID alinhado ao kick)</option>
-      <option value="publisher">publisher (taróloga — outro UID)</option>
-    </select>
+    <legend>Passo 3 — Chamada 1-a-1 (RTC)</legend>
     <p class="hint">
-      Com <strong>audience</strong> não há câmara local (caixa “Local” fica preta). O “Remoto” só mostra imagem se
-      <strong>outra pessoa</strong> entrar no <strong>mesmo canal</strong> com <strong>publisher</strong> (outro browser:
-      login da taróloga, mesma sessão/canal, papel publisher). Testar sozinho = dois lados pretos é normal.
+      O backend devolve token <strong>publisher</strong> para os dois lados (micro + câmara). O pedido usa
+      <code>GET …/sessions/:id/token?role=publisher</code>.
     </p>
-    <button type="button" id="btnCall" disabled>3. Iniciar Chamada de Vídeo</button>
+    <p id="rtcTechHint" class="hint" style="color: #9aa8b3">
+      SDK: <code>AgoraRTC.createClient({ mode: 'rtc', codec: 'vp8' })</code> — comunicação 1-a-1 (não live). Aceite câmara/micro ao clicar em Iniciar.
+    </p>
+    <button type="button" id="btnCall" disabled>3. Iniciar chamada de vídeo</button>
     <button type="button" class="secondary" id="btnLeave">Sair do canal</button>
   </fieldset>
 
@@ -323,19 +326,14 @@
         return tracks.length > 1 ? tracks[1] : tracks[0];
       }
 
-      /** Mensagens quando ainda não há stream (audience não publica; remoto precisa de outro publisher). */
-      function setPreviewPlaceholders(role) {
+      /** Placeholders antes do join — ambos os lados publicam (1-a-1). */
+      function setCallPreviewPlaceholders() {
         var loc = document.getElementById('local');
         var rem = document.getElementById('remote');
-        if (role === 'publisher' || role === '') {
-          loc.innerHTML =
-            '<span class="video-placeholder">A pedir câmara/micro… aceita as permissões do browser.</span>';
-        } else {
-          loc.innerHTML =
-            '<span class="video-placeholder">Audience — sem vídeo local (normal). Na outra ponta usa <strong>publisher</strong>.</span>';
-        }
+        loc.innerHTML =
+          '<span class="video-placeholder">Após o join: câmara e micro locais (aceita permissões).</span>';
         rem.innerHTML =
-          '<span class="video-placeholder">Vídeo remoto aparece quando alguém com <strong>publisher</strong> estiver neste canal.</span>';
+          '<span class="video-placeholder">Vídeo/áudio do outro participante aparecem após publicação remota.</span>';
       }
 
       function log(msg) {
@@ -392,13 +390,6 @@
               '</strong> — cola o UUID da linha <code>Sessão criada:</code> no browser do <strong>cliente</strong> (não o Specialist ID do quadro de config).';
           }
         }
-      }
-
-      function applyDefaultTokenRoleForProfile() {
-        var sel = document.getElementById('tokenRole');
-        if (!sel) return;
-        if (userRole === 'CLIENTE') sel.value = 'audience';
-        else if (userRole && userRole !== 'CLIENTE') sel.value = 'publisher';
       }
 
       async function loadPublicConfig() {
@@ -594,7 +585,6 @@
           }
           userRole = json.dados && json.dados.usuario && json.dados.usuario.role;
           log('Logado com sucesso. Perfil: ' + (userRole || '(sem role na resposta)'));
-          applyDefaultTokenRoleForProfile();
           updateSessionUi();
         } catch (e) {
           log('Login erro: ' + (e && e.message));
@@ -673,7 +663,7 @@
         sessionId = sid;
         document.getElementById('btnCall').disabled = false;
         log('Sessão ligada neste browser: ' + sessionId);
-        log('Passo 3: confirme papel publisher e inicie a chamada para o cliente ver o teu vídeo.');
+        log('Passo 3: inicie a chamada — cliente e taróloga publicam áudio/vídeo (token publisher).');
       });
 
       async function leaveChannel() {
@@ -708,14 +698,12 @@
         }
         await leaveChannel();
 
-        var role = document.getElementById('tokenRole').value || 'audience';
-        setPreviewPlaceholders(role);
+        setCallPreviewPlaceholders();
 
-        log('A pedir token RTC…');
+        log('A pedir token RTC (publisher 1-a-1)…');
         var tokenUrl =
           apiUrl('/sessions/' + encodeURIComponent(sessionId) + '/token') +
-          '?expiresIn=3600&role=' +
-          encodeURIComponent(role);
+          '?expiresIn=3600&role=publisher';
 
         try {
           var res = await fetch(tokenUrl, {
@@ -740,7 +728,17 @@
             log('Token incompleto na resposta: ' + JSON.stringify(Object.keys(d)));
             return;
           }
-          log('Token gerado (canal: ' + channel + ', uid: ' + uid + ', appId: ' + appId.slice(0, 8) + '…).');
+          log(
+            'Token OK — papel na resposta API: ' +
+              (d.role || d.roleUsed || '?') +
+              ' | canal: ' +
+              channel +
+              ' | uid: ' +
+              uid +
+              ' | appId: ' +
+              appId.slice(0, 8) +
+              '…'
+          );
 
           if (typeof AgoraRTC === 'undefined') {
             log('AgoraRTC não carregou — ver script AgoraRTC_N.js.');
@@ -757,7 +755,7 @@
           });
 
           client.on('user-joined', function (u) {
-            log('Outro utilizador no canal (uid=' + u.uid + '). Se for publisher, o vídeo remoto deve aparecer.');
+            log('Outro participante no canal (uid=' + u.uid + ').');
           });
 
           client.on('user-published', async function (user, mediaType) {
@@ -786,32 +784,28 @@
 
           var uidJoin = typeof uid === 'number' ? uid : parseInt(String(uid), 10);
           await client.join(appId, channel, token, uidJoin);
-          log('Conectado ao canal Agora (join OK).');
+          log('Conectado ao canal Agora (join OK, modo rtc 1-a-1).');
 
-          if (role === 'publisher' || role === '') {
-            try {
-              localTracks = await AgoraRTC.createMicrophoneAndCameraTracks();
-            } catch (camErr) {
-              log(
-                'Câmara/micro: ' +
-                  (camErr && camErr.message) +
-                  ' — autoriza permissões ou desbloqueia o site em Preferências.'
-              );
-              throw camErr;
-            }
-            await client.publish(localTracks);
-            var loc = document.getElementById('local');
-            loc.innerHTML = '';
-            var vt = findLocalVideoTrack(localTracks);
-            if (vt && typeof vt.play === 'function') {
-              vt.play(loc, { fit: 'cover', mirror: true });
-            } else {
-              log('Não foi possível identificar o track de vídeo local (ordem do SDK diferente?).');
-            }
-            log('Publicação local áudio+vídeo (publisher).');
-          } else {
-            log('Modo audience — sem publish local. Abre outra janela com publisher para ver vídeo remoto.');
+          try {
+            localTracks = await AgoraRTC.createMicrophoneAndCameraTracks();
+          } catch (camErr) {
+            log(
+              'Câmara/micro: ' +
+                (camErr && camErr.message) +
+                ' — autoriza permissões ou desbloqueia o site em Preferências.'
+            );
+            throw camErr;
           }
+          await client.publish(localTracks);
+          var loc = document.getElementById('local');
+          loc.innerHTML = '';
+          var vt = findLocalVideoTrack(localTracks);
+          if (vt && typeof vt.play === 'function') {
+            vt.play(loc, { fit: 'cover', mirror: true });
+          } else {
+            log('Não foi possível identificar o track de vídeo local (ordem do SDK diferente?).');
+          }
+          log('Publicação local: micro + câmara activos. Confirma áudio na outra ponta (ambos com publisher).');
         } catch (e) {
           log('Chamada erro: ' + (e && e.message));
           console.error(e);

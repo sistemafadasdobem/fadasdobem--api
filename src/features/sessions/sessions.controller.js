@@ -14,8 +14,8 @@ module.exports = {
 
   /**
    * GET /api/v1/sessions/:id/token · Auth Bearer
-   * Query: `role` = `publisher` (taróloga) ou `subscriber`/`audience` (cliente);
-   * opcional `expiresIn` ou `expiresInSeconds` (60–86400).
+   * Consulta 1-a-1: o token é sempre gerado com privilégio de publicação (RtcRole.PUBLISHER).
+   * Query `role` é legado e ignorada. Opcional: `expiresIn` / `expiresInSeconds` (60–86400).
    */
   getRtcJoinToken: catchAsyncRoute(async (req, res) => {
     const dados = await sessionsService.getRtcTokenForAuthenticatedUser(
@@ -40,6 +40,27 @@ module.exports = {
     setImmediate(() => {
       sessionsService.processAgoraNcsWebhookAsync(req.body || {}).catch((err) => {
         console.error('[Agora:Webhook] falha no processamento async', err?.stack || err?.message || err);
+      });
+    });
+  },
+
+  /** Resposta rápida 200; processamento deferido (retry do Wide Voice / Nginx). */
+  receiveIntelbrasWebhook(req, res) {
+    const preview =
+      req.body && typeof req.body === 'object'
+        ? {
+            Evento: req.body.Evento ?? req.body.evento ?? null,
+            UniqueId: req.body.UniqueId ?? null,
+          }
+        : {};
+    console.log('[Intelbras:Webhook] HTTP recebido · respondendo 200 imediato', {
+      preview,
+      ip: req.ip || req.socket?.remoteAddress,
+    });
+    responderSucesso(res, { aceito: true }, 'Webhook Intelbras recebido.', 200);
+    setImmediate(() => {
+      sessionsService.processIntelbrasTelephonyWebhookAsync(req.body || {}).catch((err) => {
+        console.error('[Intelbras:Webhook] falha no processamento async', err?.stack || err?.message || err);
       });
     });
   },

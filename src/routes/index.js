@@ -4,6 +4,7 @@ const chatwootRoutes = require('../features/chatwoot/chatwoot.routes');
 const evolutionRoutes = require('../features/evolution/evolution.routes');
 const specialistsRoutes = require('../features/specialists/specialists.routes');
 const sessionsRoutes = require('../features/sessions/sessions.routes');
+const paymentsRoutes = require('../features/payments/payments.routes');
 const configRoutes = require('../features/config/config.routes');
 const { responderSucesso } = require('../utils/response.util');
 const { API_VERSION_SEMVER } = require('../config/version');
@@ -16,6 +17,7 @@ router.use('/v1/chatwoot', chatwootRoutes);
 router.use('/v1/evolution-admin', evolutionRoutes);
 router.use('/v1/specialists', specialistsRoutes);
 router.use('/v1/sessions', sessionsRoutes);
+router.use('/v1/payments', paymentsRoutes);
 
 router.get('/ping', (_req, res) => {
   return responderSucesso(

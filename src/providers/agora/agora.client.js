@@ -1,7 +1,7 @@
 const axios = require('axios');
 const { RtcTokenBuilder, RtcRole } = require('agora-access-token');
 
-/** @param {'publisher'|'audience'} role */
+/** @param {'publisher'|'audience'} role — em consultas 1-a-1 o serviço passa sempre `publisher` */
 function rtcRoleConst(role = 'publisher') {
   const r = `${role || ''}`.toLowerCase();
   return r === 'audience' || r === 'subscriber' ? RtcRole.SUBSCRIBER : RtcRole.PUBLISHER;
@@ -27,7 +27,7 @@ function requireRtcEnvOrThrow() {
  * RTC token (`agora-access-token`).
  * @param {string} channelName
  * @param {number} uid inteiro SDK
- * @param {'publisher'|'audience'} [role='publisher']
+ * @param {'publisher'|'audience'} [role='publisher'] Mapa para RtcRole; a API de sessões usa sempre `publisher` em 1-a-1.
  * @param {number} [expirationSecs=3600] TTL em segundos (clamp 60…86400)
  */
 function generateRtcToken(channelName, uid, role = 'publisher', expirationSecs = 3600) {
