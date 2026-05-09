@@ -22,10 +22,15 @@ module.exports = {
 
   /** Resposta rápida 200; processamento deferido para não causar retry do NCS. */
   receiveAgoraNcsWebhook(req, res) {
+    const snap = sessionsService.summarizeNcsBodyForLog(req.body || {});
+    console.log('[Agora:Webhook] HTTP recebido · respondendo 200 imediato', {
+      snap,
+      ip: req.ip || req.socket?.remoteAddress,
+    });
     responderSucesso(res, { aceito: true }, 'Webhook NCS recebido.', 200);
     setImmediate(() => {
       sessionsService.processAgoraNcsWebhookAsync(req.body || {}).catch((err) => {
-        console.error('[sessions:agora-ncs-async]', err?.message || err);
+        console.error('[Agora:Webhook] falha no processamento async', err?.stack || err?.message || err);
       });
     });
   },

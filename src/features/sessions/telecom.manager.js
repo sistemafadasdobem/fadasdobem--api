@@ -24,6 +24,7 @@ async function disconnectSession(session) {
 
     for (const uidKick of uidsKick) {
       try {
+        console.log('[Agora:Kick] kicking-rule', { channel, uid: uidKick });
         const data = await agoraClient.kickUserFromChannel(channel, uidKick);
         anyOk = true;
         parts.push(`${uidKick}:${typeof data === 'object' ? JSON.stringify(data).slice(0, 240) : String(data)}`);

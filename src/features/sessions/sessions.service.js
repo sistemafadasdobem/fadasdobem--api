@@ -6,6 +6,28 @@ const agoraClient = require('../../providers/agora/agora.client');
 const CHRONO = require('./session.constants');
 const telecomManager = require('./telecom.manager');
 
+/** Resumo seguro para logs (sem expor token ou payloads enormes). */
+function summarizeNcsBodyForLog(body) {
+  const b = body && typeof body === 'object' && !Array.isArray(body) ? body : {};
+  const payload =
+    b.payload && typeof b.payload === 'object' && !Array.isArray(b.payload) ? b.payload : {};
+  return {
+    eventType: b.eventType ?? b.event_type ?? null,
+    channelName: typeof payload.channelName === 'string' ? payload.channelName : null,
+    uid: payload.uid ?? null,
+    reason: payload.reason != null ? String(payload.reason).slice(0, 120) : null,
+    notifyMs: typeof b.notifyMs === 'number' ? b.notifyMs : null,
+    payloadKeys: payload && typeof payload === 'object' ? Object.keys(payload).slice(0, 16) : [],
+    topKeys: Object.keys(b).slice(0, 16),
+  };
+}
+
+function maskTokenPreview(token) {
+  const t = `${token || ''}`;
+  if (t.length <= 12) return '(curto)';
+  return `${t.slice(0, 8)}…${t.slice(-6)} (${t.length}b)`;
+}
+
 function clampExpires(seconds) {
   const n =
     typeof seconds === 'string'
@@ -118,6 +140,12 @@ async function processOneBillingSession(session) {
   const remainingPaidBucket = affordablePaidWholeMinutes - paidUsed;
 
   if (paidUsed > 0 && remainingPaidBucket <= 0) {
+    console.warn('[Agora:Billing] saldo esgotado · hard cut', {
+      sessionId: session.id,
+      paidUsed,
+      freeUsed,
+      channel: `${session.provider_channel_id || session.agora_channel_id || ''}`.trim() || null,
+    });
     await telecomManager.disconnectSession(session).catch(() => {});
     await session.update({
       telecom_status: 'COMPLETED',
@@ -136,6 +164,11 @@ async function processOneBillingSession(session) {
     remainingPaidBucket <= warnRemain &&
     session.telecom_status !== 'WARNING'
   ) {
+    console.log('[Agora:Billing] WARNING — minutos pagos restantes baixos', {
+      sessionId: session.id,
+      remainingPaidBucket,
+      paidUsed,
+    });
     await session.update({
       telecom_status: 'WARNING',
       free_minutes_used: freeUsed,
@@ -231,6 +264,15 @@ async function getRtcTokenForAuthenticatedUser(sessionId, authenticatedUserId, o
   }
 
   const appId = `${process.env.AGORA_APP_ID || ''}`.trim();
+  console.log('[Agora:RTC] token emitido', {
+    sessionId: sid,
+    channel: channelRaw,
+    rtcRole,
+    uid: rtcUidNum,
+    expiresSecs,
+    appIdPreview: appId ? `${appId.slice(0, 8)}…` : null,
+    tokenPreview: maskTokenPreview(pack.token),
+  });
   return {
     token: pack.token,
     /** Canal Agora (`cname`) — preferível no front Renan */
@@ -250,6 +292,9 @@ async function getRtcTokenForAuthenticatedUser(sessionId, authenticatedUserId, o
 }
 
 async function processAgoraNcsWebhookAsync(body) {
+  const summary = summarizeNcsBodyForLog(body);
+  console.log('[Agora:Webhook] processando async', summary);
+
   const rawType = body?.eventType ?? body?.event_type;
   const eventType =
     typeof rawType === 'number'
@@ -258,7 +303,10 @@ async function processAgoraNcsWebhookAsync(body) {
         ? parseInt(rawType, 10)
         : NaN;
 
-  if (!Number.isFinite(eventType)) return;
+  if (!Number.isFinite(eventType)) {
+    console.log('[Agora:Webhook] ignorado · eventType inválido ou ausente', summary);
+    return;
+  }
 
   const payload =
     typeof body?.payload === 'object' && body.payload !== null && !Array.isArray(body.payload)
@@ -267,12 +315,16 @@ async function processAgoraNcsWebhookAsync(body) {
 
   const channel = typeof payload.channelName === 'string' ? payload.channelName.trim() : '';
   if (!channel || (eventType !== 103 && eventType !== 104)) {
+    console.log('[Agora:Webhook] ignorado · fora 103/104 ou sem channel', {
+      eventType,
+      channel: channel || null,
+    });
     return;
   }
 
   const uidJoin = parseUidFlexible(payload.uid);
   if (uidJoin === null) {
-    console.warn('[agora:webhook] uid inválido', { channel, eventType });
+    console.warn('[Agora:Webhook] uid inválido no payload', { channel, eventType, summary });
     return;
   }
 
@@ -289,21 +341,34 @@ async function processAgoraNcsWebhookAsync(body) {
     }));
 
   if (!session) {
-    console.warn('[agora:webhook] sessão não encontrada para canal', channel);
+    console.warn('[Agora:Webhook] nenhuma Session na BD para o canal', { channel, eventType, uidJoin });
     return;
   }
 
   const tsSeconds = resolveWebhookTimestampSeconds(payload, body || {});
 
   if (!uidMatchesSession(session, uidJoin)) {
-    console.warn('[agora:webhook] uid ignorado nesta sessão', channel, uidJoin);
+    console.warn('[Agora:Webhook] uid não corresponde agora_uid_client/specialist', {
+      sessionId: session.id,
+      channel,
+      eventType,
+      uidJoin,
+    });
     return;
   }
 
   if (eventType === 103) {
+    const wasStarted = Boolean(session.started_at);
     await session.update({
       telecom_status: 'ACTIVE',
       started_at: session.started_at || new Date(tsSeconds * 1000),
+    });
+    console.log('[Agora:Webhook] User Joined (103) → ACTIVE', {
+      sessionId: session.id,
+      channel,
+      uidJoin,
+      tsSeconds,
+      started_at_preexistente: wasStarted,
     });
     return;
   }
@@ -319,10 +384,21 @@ async function processAgoraNcsWebhookAsync(body) {
     rtc_end_reason:
       payload.reason !== undefined && payload.reason !== null ? String(payload.reason) : null,
   });
+
+  console.log('[Agora:Webhook] User Left (104) → COMPLETED', {
+    sessionId: session.id,
+    channel,
+    uidJoin,
+    tsSeconds,
+    rtc_duration_seconds: typeof durationCalc === 'number' ? Math.trunc(durationCalc) : null,
+    rtc_end_reason:
+      payload.reason !== undefined && payload.reason !== null ? String(payload.reason).slice(0, 120) : null,
+  });
 }
 
 module.exports = {
   clampExpires,
+  summarizeNcsBodyForLog,
   getRtcTokenForAuthenticatedUser,
   processAgoraNcsWebhookAsync,
   billingTickSweepAsync,

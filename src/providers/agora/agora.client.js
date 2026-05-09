@@ -188,6 +188,8 @@ async function kickUserFromChannel(channelName, uid) {
     }
   );
 
+  console.log('[Agora:Kick] resposta ok', { cname, uid: uidNum, status: response.status });
+
   return response.data;
 }
 
