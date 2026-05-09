@@ -8,18 +8,82 @@ const telecomManager = require('./telecom.manager');
 
 /** Resumo seguro para logs (sem expor token ou payloads enormes). */
 function summarizeNcsBodyForLog(body) {
-  const b = body && typeof body === 'object' && !Array.isArray(body) ? body : {};
-  const payload =
-    b.payload && typeof b.payload === 'object' && !Array.isArray(b.payload) ? b.payload : {};
+  const { envelope, payload } = normalizeNcsEnvelopeAndPayload(body);
+  const channel = extractNcsChannelName(payload, envelope);
   return {
-    eventType: b.eventType ?? b.event_type ?? null,
-    channelName: typeof payload.channelName === 'string' ? payload.channelName : null,
-    uid: payload.uid ?? null,
+    eventType: envelope.eventType ?? envelope.event_type ?? null,
+    channelName: channel || null,
+    uid: extractNcsUidRaw(payload, envelope),
     reason: payload.reason != null ? String(payload.reason).slice(0, 120) : null,
-    notifyMs: typeof b.notifyMs === 'number' ? b.notifyMs : null,
+    notifyMs: typeof envelope.notifyMs === 'number' ? envelope.notifyMs : null,
+    noticeId: typeof envelope.noticeId === 'string' ? envelope.noticeId.slice(0, 64) : null,
     payloadKeys: payload && typeof payload === 'object' ? Object.keys(payload).slice(0, 16) : [],
-    topKeys: Object.keys(b).slice(0, 16),
+    topKeys: envelope && typeof envelope === 'object' ? Object.keys(envelope).slice(0, 16) : [],
   };
+}
+
+/**
+ * Corpo NCS pode trazer `payload` como objeto, string JSON, ou campos repetidos fora do payload.
+ */
+function normalizeNcsEnvelopeAndPayload(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { envelope: {}, payload: {} };
+  }
+  let payload = body.payload;
+  if (typeof payload === 'string') {
+    try {
+      payload = JSON.parse(payload);
+    } catch {
+      payload = {};
+    }
+  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    payload = {};
+  }
+  return { envelope: body, payload };
+}
+
+function parseNcsEventType(envelope) {
+  const raw = envelope?.eventType ?? envelope?.event_type;
+  let et =
+    typeof raw === 'number'
+      ? raw
+      : typeof raw === 'string'
+        ? parseInt(raw, 10)
+        : NaN;
+  if (Number.isFinite(et)) return et;
+  const nid = envelope?.noticeId;
+  if (typeof nid === 'string' && nid.includes(':')) {
+    const last = nid.split(':').pop();
+    const p = parseInt(String(last), 10);
+    if (Number.isFinite(p)) return p;
+  }
+  return NaN;
+}
+
+/** Canal RTC: NCS usa `channelName`; variantes comuns em integrações. */
+function extractNcsChannelName(payload, envelope) {
+  const p = payload && typeof payload === 'object' ? payload : {};
+  const e = envelope && typeof envelope === 'object' ? envelope : {};
+  const c =
+    (typeof p.channelName === 'string' && p.channelName.trim()) ||
+    (typeof p.channel === 'string' && p.channel.trim()) ||
+    (typeof p.cname === 'string' && p.cname.trim()) ||
+    (typeof e.channelName === 'string' && e.channelName.trim()) ||
+    (typeof e.channel === 'string' && e.channel.trim()) ||
+    '';
+  return c;
+}
+
+function extractNcsUidRaw(payload, envelope) {
+  const p = payload && typeof payload === 'object' ? payload : {};
+  const e = envelope && typeof envelope === 'object' ? envelope : {};
+  return p.uid ?? p.userId ?? p.account ?? e.uid ?? null;
+}
+
+/** UID após coerção numérica (RTC Agora é inteiro). */
+function extractNcsUidNumeric(payload, envelope) {
+  return parseUidFlexible(extractNcsUidRaw(payload, envelope));
 }
 
 function maskTokenPreview(token) {
@@ -295,34 +359,25 @@ async function processAgoraNcsWebhookAsync(body) {
   const summary = summarizeNcsBodyForLog(body);
   console.log('[Agora:Webhook] processando async', summary);
 
-  const rawType = body?.eventType ?? body?.event_type;
-  const eventType =
-    typeof rawType === 'number'
-      ? rawType
-      : typeof rawType === 'string'
-        ? parseInt(rawType, 10)
-        : NaN;
+  const { envelope, payload } = normalizeNcsEnvelopeAndPayload(body);
+  const eventType = parseNcsEventType(envelope);
 
   if (!Number.isFinite(eventType)) {
     console.log('[Agora:Webhook] ignorado · eventType inválido ou ausente', summary);
     return;
   }
 
-  const payload =
-    typeof body?.payload === 'object' && body.payload !== null && !Array.isArray(body.payload)
-      ? body.payload
-      : {};
-
-  const channel = typeof payload.channelName === 'string' ? payload.channelName.trim() : '';
+  const channel = extractNcsChannelName(payload, envelope);
   if (!channel || (eventType !== 103 && eventType !== 104)) {
     console.log('[Agora:Webhook] ignorado · fora 103/104 ou sem channel', {
       eventType,
       channel: channel || null,
+      productId: envelope?.productId ?? null,
     });
     return;
   }
 
-  const uidJoin = parseUidFlexible(payload.uid);
+  const uidJoin = extractNcsUidNumeric(payload, envelope);
   if (uidJoin === null) {
     console.warn('[Agora:Webhook] uid inválido no payload', { channel, eventType, summary });
     return;
@@ -345,7 +400,7 @@ async function processAgoraNcsWebhookAsync(body) {
     return;
   }
 
-  const tsSeconds = resolveWebhookTimestampSeconds(payload, body || {});
+  const tsSeconds = resolveWebhookTimestampSeconds(payload, envelope || {});
 
   if (!uidMatchesSession(session, uidJoin)) {
     console.warn('[Agora:Webhook] uid não corresponde agora_uid_client/specialist', {
