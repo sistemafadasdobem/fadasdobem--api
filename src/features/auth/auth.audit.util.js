@@ -20,18 +20,22 @@ async function recordAuthSecurityAudit({
   targetEntity = 'User',
   metadata = {},
 }) {
-  await AuditLog.create({
-    admin_id: null,
-    action,
-    target_entity: targetEntity,
-    target_id: userId,
-    old_value: null,
-    new_value: null,
-    metadata: metadata && typeof metadata === 'object' ? metadata : {},
-    ip_address: ip ? `${ip}`.slice(0, 45) : null,
-    user_agent: userAgent ? `${userAgent}`.slice(0, 2000) : null,
-    occurred_at: new Date(),
-  });
+  try {
+    await AuditLog.create({
+      admin_id: null,
+      action,
+      target_entity: targetEntity,
+      target_id: userId,
+      old_value: null,
+      new_value: null,
+      metadata: metadata && typeof metadata === 'object' ? metadata : {},
+      ip_address: ip ? `${ip}`.slice(0, 45) : null,
+      user_agent: userAgent ? `${userAgent}`.slice(0, 2000) : null,
+      occurred_at: new Date(),
+    });
+  } catch (err) {
+    console.error('[auth-audit] falha ao registar evento (não bloqueia fluxo):', action, err.message);
+  }
 }
 
 module.exports = {

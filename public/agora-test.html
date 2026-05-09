@@ -123,14 +123,20 @@
 <body>
   <h1>Mini Front — Homologação Agora + API</h1>
   <p class="hint">
-    Sirva esta página a partir <strong>do mesmo host</strong> que a API (ex. <code>https://teu-dominio/agora-test.html</code>)
-    para o browser carregar <code>AGORA_APP_ID</code> do servidor via <code>GET /api/v1/config/public</code>.
+    Modo ideal: abrir <strong>no próprio servidor da API</strong>, ex.
+    <code id="hintExampleUrl">http://localhost:3000/agora-test.html</code> (porta = <code>PORT</code> no <code>.env</code>).
+    Se abrires o ficheiro em disco (<code>file://</code>) ou com Live Server noutra porta, indica abaixo a <strong>raiz HTTP da API</strong>
+    (ou usa na URL <code>?api=http://localhost:3000</code>).
   </p>
 
   <fieldset>
     <legend>Configuração (servidor)</legend>
-    <div id="configStatus" class="config-readonly">A carregar <code>/api/v1/config/public</code>…</div>
+    <label>Raiz da API (só se não estiveres no mesmo host/porta que o Express)</label>
+    <input type="text" id="apiRoot" placeholder="http://localhost:3000" autocomplete="off" />
+    <p class="hint">Deixa vazio se acedes a esta página já em <code>http(s)://…/agora-test.html</code> servida pelo <code>app.js</code>.</p>
+    <button type="button" class="secondary" id="btnSaveApiRoot">Guardar raiz (navegador) e carregar config</button>
     <button type="button" class="secondary" id="btnReloadCfg">Recarregar config da API</button>
+    <div id="configStatus" class="config-readonly" style="margin-top:10px;">A iniciar…</div>
   </fieldset>
 
   <fieldset>
@@ -185,6 +191,7 @@
   <script>
     (function () {
       var DEFAULT_HOMOLOG_PASSWORD = 'Homolog@2026';
+      var STORAGE_API_ROOT = 'agoraTestApiRoot';
       var API_BASE = '';
       var agoraAppIdFromServer = '';
       var jwt = null;
@@ -192,6 +199,55 @@
       var client = null;
       var localTracks = [];
       var logEl = document.getElementById('log');
+
+      function parseApiRootInput(raw) {
+        var s = String(raw || '').trim().replace(/\/$/, '');
+        if (!s) return '';
+        if (/\/api\/v1$/i.test(s)) return s.slice(0, -'/api/v1'.length);
+        return s;
+      }
+
+      function normalizeToApiV1(root) {
+        root = String(root || '').trim().replace(/\/$/, '');
+        if (!root) return '';
+        if (/\/api\/v1$/i.test(root)) return root;
+        return root + '/api/v1';
+      }
+
+      /** Ordem: ?api= na URL → campo #apiRoot → sessionStorage → mesma origem (só http/https). */
+      function resolveApiBase() {
+        var params = new URLSearchParams(window.location.search || '');
+        var fromQuery = parseApiRootInput(params.get('api') || params.get('apiBase') || '');
+        if (fromQuery) return normalizeToApiV1(fromQuery);
+
+        var fromInput = parseApiRootInput(document.getElementById('apiRoot').value);
+        if (fromInput) return normalizeToApiV1(fromInput);
+
+        try {
+          var stored = sessionStorage.getItem(STORAGE_API_ROOT);
+          if (stored) return normalizeToApiV1(parseApiRootInput(stored));
+        } catch (e) {}
+
+        if (window.location.protocol === 'file:') return '';
+
+        var o = window.location.origin;
+        if (o && o !== 'null' && (window.location.protocol === 'http:' || window.location.protocol === 'https:')) {
+          return normalizeToApiV1(o);
+        }
+        return '';
+      }
+
+      function describeFetchError(err) {
+        var m = (err && err.message) || String(err);
+        if (/Failed to fetch|NetworkError|Load failed/i.test(m)) {
+          return (
+            m +
+            ' — rede/CORS ou URL errada. Confirma que a API está a correr, experimenta ' +
+            '<code>?api=http://localhost:3000</code> na URL ou preenche “Raiz da API”.'
+          );
+        }
+        return m;
+      }
 
       function log(msg) {
         var t = new Date().toISOString().slice(11, 23);
@@ -210,12 +266,43 @@
       }
 
       async function loadPublicConfig() {
-        API_BASE = String(window.location.origin || '').replace(/\/$/, '') + '/api/v1';
+        API_BASE = resolveApiBase();
+        if (!API_BASE) {
+          document.getElementById('configStatus').innerHTML =
+            '<strong>Não foi possível determinar a URL da API.</strong> Estás em <code>' +
+            (window.location.protocol || '') +
+            '</code> — abre a página em <code>http://localhost:' +
+            (window.location.port || '3000') +
+            '/agora-test.html</code> (com a API a correr) ou preenche <strong>Raiz da API</strong> / <code>?api=http://localhost:3000</code>.';
+          log('Defina a raiz da API (campo acima) ou use URL com ?api=…');
+          setFormEnabled(false);
+          return;
+        }
+
         document.getElementById('configStatus').innerHTML =
           'A pedir <code>' + API_BASE + '/config/public</code>…';
+        log('Pedido de config a: ' + API_BASE + '/config/public');
 
-        var res = await fetch(apiUrl('/config/public'), { credentials: 'same-origin' });
-        var json = await res.json();
+        var res;
+        var json;
+        try {
+          res = await fetch(apiUrl('/config/public'), { credentials: 'omit', mode: 'cors' });
+        } catch (err) {
+          log('Config: ' + describeFetchError(err));
+          document.getElementById('configStatus').innerHTML =
+            '<strong>Falha de rede</strong> — ' + describeFetchError(err);
+          setFormEnabled(false);
+          return;
+        }
+        try {
+          json = await res.json();
+        } catch (e) {
+          log('Resposta não-JSON (HTTP ' + res.status + '). Será a API correcta?');
+          document.getElementById('configStatus').innerHTML =
+            '<strong>Resposta inválida</strong> — HTTP ' + res.status + '. Verifica a “Raiz da API”.';
+          setFormEnabled(false);
+          return;
+        }
         if (!res.ok || !json.sucesso) {
           document.getElementById('configStatus').innerHTML =
             '<strong>Erro</strong> ao ler config: HTTP ' + res.status + ' — ' + (json.mensagem || '');
@@ -227,7 +314,7 @@
         agoraAppIdFromServer = (d.agora_app_id || '').trim();
 
         var lines = [];
-        lines.push('API (esta página): <code>' + API_BASE + '</code>');
+        lines.push('Base da API usada: <code>' + API_BASE + '</code>');
         lines.push('Agora App ID (do <code>.env</code> do servidor): <code>' + (agoraAppIdFromServer || '(vazio — defina AGORA_APP_ID)') + '</code>');
         if (d.api_version) lines.push('API versão: <code>' + d.api_version + '</code>');
         if (d.homolog_login_email) {
@@ -264,9 +351,37 @@
 
       document.getElementById('btnReloadCfg').addEventListener('click', function () {
         loadPublicConfig().catch(function (e) {
-          log('Recarregar config: ' + (e && e.message));
+          log('Recarregar config: ' + describeFetchError(e));
         });
       });
+
+      document.getElementById('btnSaveApiRoot').addEventListener('click', function () {
+        var raw = document.getElementById('apiRoot').value.trim();
+        try {
+          if (raw) sessionStorage.setItem(STORAGE_API_ROOT, parseApiRootInput(raw));
+          else sessionStorage.removeItem(STORAGE_API_ROOT);
+        } catch (e) {}
+        loadPublicConfig().catch(function (err) {
+          log('Guardar raiz: ' + describeFetchError(err));
+        });
+      });
+
+      (function initApiRootField() {
+        var params = new URLSearchParams(window.location.search || '');
+        var fromQuery = parseApiRootInput(params.get('api') || params.get('apiBase') || '');
+        try {
+          if (fromQuery) {
+            document.getElementById('apiRoot').value = fromQuery;
+            sessionStorage.setItem(STORAGE_API_ROOT, fromQuery);
+          } else {
+            var s = sessionStorage.getItem(STORAGE_API_ROOT);
+            if (s) document.getElementById('apiRoot').value = s;
+          }
+        } catch (e) {}
+        var port = window.location.port || '3000';
+        var ex = document.getElementById('hintExampleUrl');
+        if (ex) ex.textContent = 'http://localhost:' + port + '/agora-test.html';
+      })();
 
       document.getElementById('btnDismissOverlay').addEventListener('click', function () {
         document.getElementById('hardCutOverlay').classList.remove('visible');
@@ -454,9 +569,9 @@
 
       log('Mini Front: à espera da config do servidor…');
       loadPublicConfig().catch(function (e) {
-        log('Bootstrap falhou: ' + (e && e.message));
+        log('Bootstrap falhou: ' + describeFetchError(e));
         document.getElementById('configStatus').innerHTML =
-          '<strong>Erro</strong> ' + (e && e.message) + ' — abra esta página no mesmo host que a API.';
+          '<strong>Erro</strong> — ' + describeFetchError(e);
         setFormEnabled(false);
       });
     })();
