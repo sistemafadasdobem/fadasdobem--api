@@ -314,6 +314,13 @@
         agoraAppIdFromServer = (d.agora_app_id || '').trim();
 
         var lines = [];
+        if (d.homolog_login_ready === false) {
+          lines.push(
+            '<strong style="color:#fbbf24">Aviso:</strong> nesta base <strong>não existe</strong> ainda o utilizador homolog (<code>' +
+              (d.homolog_login_email || '') +
+              '</code> com senha). No servidor, com o mesmo <code>DATABASE_URL</code> da API, corre <code>npm run seed:homolog</code> e volta a carregar esta página.'
+          );
+        }
         lines.push('Base da API usada: <code>' + API_BASE + '</code>');
         lines.push('Agora App ID (do <code>.env</code> do servidor): <code>' + (agoraAppIdFromServer || '(vazio — defina AGORA_APP_ID)') + '</code>');
         if (d.api_version) lines.push('API versão: <code>' + d.api_version + '</code>');

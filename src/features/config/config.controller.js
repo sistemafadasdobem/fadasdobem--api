@@ -2,6 +2,7 @@ const { User, Specialist } = require('../../models');
 const { responderSucesso } = require('../../utils/response.util');
 const { catchAsyncRoute } = require('../../utils/catchAsync.util');
 const { API_VERSION_SEMVER } = require('../../config/version');
+const { normalizeEmail } = require('../auth/auth.constants');
 
 const DEFAULT_CLIENT_EMAIL = 'homolog@fadasdobem.test';
 const DEFAULT_SPECIALIST_USER_EMAIL = 'tarologa.homolog@fadasdobem.test';
@@ -13,11 +14,19 @@ const DEFAULT_SPECIALIST_USER_EMAIL = 'tarologa.homolog@fadasdobem.test';
 const getPublic = catchAsyncRoute(async (req, res) => {
   const agoraAppId = `${process.env.AGORA_APP_ID || ''}`.trim();
   const homologLoginEmail = `${process.env.SEED_HOMOLOG_EMAIL || DEFAULT_CLIENT_EMAIL}`.trim();
+  const homologEmailNorm = normalizeEmail(homologLoginEmail);
+
+  const homologClientRow = await User.findOne({
+    where: { email: homologEmailNorm },
+    attributes: ['id', 'password_hash'],
+  });
+  const homolog_login_ready = Boolean(homologClientRow && homologClientRow.password_hash);
 
   let homologSpecialistId = null;
   const specialistUserEmail = `${process.env.SEED_HOMOLOG_SPECIALIST_EMAIL || DEFAULT_SPECIALIST_USER_EMAIL}`.trim();
+  const specialistEmailNorm = normalizeEmail(specialistUserEmail);
   const specUser = await User.findOne({
-    where: { email: specialistUserEmail },
+    where: { email: specialistEmailNorm },
     attributes: ['id'],
   });
   if (specUser) {
@@ -36,6 +45,7 @@ const getPublic = catchAsyncRoute(async (req, res) => {
       api_version: API_VERSION_SEMVER,
       api_base_path: '/api/v1',
       homolog_login_email: homologLoginEmail,
+      homolog_login_ready,
       homolog_specialist_id: homologSpecialistId,
     },
     'Configuração pública.',

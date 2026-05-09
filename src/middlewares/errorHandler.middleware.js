@@ -141,7 +141,15 @@ function classifyOpenAI(err) {
 module.exports = function errorHandlerMiddleware(err, req, res, next) {
   if (res.headersSent) return next(err);
 
-  console.error('[erro-central]', req.method, req.originalUrl, err);
+  const quietOperational4xx =
+    err instanceof AppError &&
+    err.isOperational &&
+    typeof err.statusCode === 'number' &&
+    err.statusCode >= 400 &&
+    err.statusCode < 500;
+  if (!quietOperational4xx) {
+    console.error('[erro-central]', req.method, req.originalUrl, err);
+  }
 
   if (err instanceof AppError) {
     const status = typeof err.statusCode === 'number' ? err.statusCode : 500;
