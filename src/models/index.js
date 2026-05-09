@@ -23,6 +23,7 @@ const RefreshToken = require('./RefreshToken')(sequelize);
 const AuditLog = require('./AuditLog')(sequelize);
 const PlatformIntegration = require('./PlatformIntegration')(sequelize);
 const Lead = require('./Lead')(sequelize);
+const BotConversationFlowState = require('./BotConversationFlowState')(sequelize);
 
 /* --- Associações: autenticação e perfil --- */
 
@@ -390,6 +391,7 @@ const db = {
   AuditLog,
   PlatformIntegration,
   Lead,
+  BotConversationFlowState,
 };
 
 module.exports = db;

@@ -13,6 +13,9 @@ const errorHandlerMiddleware = require('./src/middlewares/errorHandler.middlewar
 const { responderSucesso } = require('./src/utils/response.util');
 const { warmupAssistantsSilent } = require('./src/providers/openai/openai.setup');
 const { API_VERSION_SEMVER } = require('./src/config/version');
+/** Motor cronômetro 2+X+2 — varredura de saldo não pode derrubar o processo HTTP. */
+const sessionChrono = require('./src/features/sessions/session.constants');
+const sessionsService = require('./src/features/sessions/sessions.service');
 require('./src/models');
 
 const app = express();
@@ -84,6 +87,16 @@ app.use(errorHandlerMiddleware);
 async function start() {
   try {
     await sequelize.authenticate();
+
+    const billingMs = Math.max(Number(sessionChrono.BILLING_TICK_INTERVAL_MS) || 10000, 1000);
+    console.log(`[BillingEngine] Motor de cobrança rodando (${billingMs}ms).`);
+    setInterval(async () => {
+      try {
+        await sessionsService.runBillingTickSweep();
+      } catch (err) {
+        console.error('[BillingEngine] tick falhou:', err?.message || err);
+      }
+    }, billingMs);
 
     // Esquema evolui por `migrations/` (`npm start` corre `scripts/run-migrations.js` antes).
     // SEQUELIZE_SYNC=true opt-in (dev ou bootstrap manual); evite alter em PRD.

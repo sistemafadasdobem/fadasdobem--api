@@ -105,6 +105,39 @@
             "description": "Probe rápido reachability Evolution usando global API KEY."
           },
           "response": []
+        },
+        {
+          "name": "Sessões — RTC token Agora (auth)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}",
+                "type": "text"
+              }
+            ],
+            "url": "{{api_base_url}}/sessions/{{session_id}}/token?expiresIn=3600&role=publisher",
+            "description": "`GET /api/v1/sessions/:id/token` — requer JWT; sessão deve ter `provider` = AGORA, `channel_name` e `agora_uid_*` preenchidos."
+          },
+          "response": []
+        },
+        {
+          "name": "Sessões — Webhook Agora NCS (simulação)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"eventType\": 103,\n  \"notifyMs\": 1712345678000,\n  \"payload\": {\n    \"channelName\": \"consulta_demo\",\n    \"uid\": 10001,\n    \"platform\": 1,\n    \"clientType\": 1,\n    \"clientSeq\": 1,\n    \"ts\": 1712345678\n  }\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{api_base_url}}/sessions/agora-webhook",
+            "description": "`POST /api/v1/sessions/agora-webhook` — o servidor responde 200 imediatamente; ajuste `channelName` e `uid` para corresponder à linha na tabela `sessions`."
+          },
+          "response": []
         }
       ]
     },

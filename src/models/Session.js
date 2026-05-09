@@ -1,5 +1,16 @@
 const { Model, DataTypes } = require('sequelize');
 
+const SESSION_TELECOM_PROVIDERS = ['AGORA', 'INTELBRAS', 'WHATSAPP'];
+
+/**
+ * Ciclo da camada telecom (cronômetro 2+X+2 + NCS/Webhooks).
+ * **Distinto** de `sessions.status` (lifecycle operacional: SCHEDULED, READY, …).
+ *
+ * Equivalente conceitual ao `status` do documento funcional quando ele se refere apenas à sessão média ao vivo.
+ */
+const SESSION_TELECOM_STATUSES = ['PENDING', 'ACTIVE', 'WARNING', 'COMPLETED', 'ERROR'];
+
+/** Ciclo operacional da consulta agendamento/pagamentos (tabela legacy). */
 const SESSION_STATUSES = [
   'SCHEDULED',
   'WAITING_PAYMENT',
@@ -27,6 +38,10 @@ const SESSION_END_REASONS = [
   'CANCELLED_BY_ADMIN',
   'PLATFORM_ERROR',
   'THIRD_PARTY_SDK_ERROR',
+  /** Telecom / auditoria específicos (PostgreSQL ENUM — valores adicionados por migração). */
+  'MANUAL',
+  'NO_BALANCE_HARD_CUT',
+  'NETWORK_ERROR',
 ];
 
 class Session extends Model {}
@@ -66,23 +81,27 @@ module.exports = (sequelize) => {
         type: DataTypes.DECIMAL(6, 4),
         allowNull: true,
         defaultValue: 2,
-        comment: 'Janelas free “2+X+2”: minutos gratuitos antes (configurável)',
+        comment:
+          'Janelas free “2+X+2”: cortesia inicial antes do X pago (`session.constants.js` sincronizado em 2).',
       },
       cron_config_free_wrap_minutes: {
         type: DataTypes.DECIMAL(6, 4),
         allowNull: true,
         defaultValue: 2,
-        comment: 'Minutos gratuitos após cortesia final',
+        comment:
+          'Janela de aviso (minutos) antes do zero — alinhar a `WARNING_REMAINING_MINUTES` em código.',
       },
       free_minutes_used: {
-        type: DataTypes.DECIMAL(10, 4),
+        type: DataTypes.INTEGER,
         allowNull: false,
         defaultValue: 0,
+        comment: 'Progresso inteiro dos minutos de cortesia inicial consumidos (cronômetro 2+X+2).',
       },
       paid_minutes_used: {
-        type: DataTypes.DECIMAL(10, 4),
+        type: DataTypes.INTEGER,
         allowNull: false,
         defaultValue: 0,
+        comment: 'Minutos inteiros na zona paga já contabilizados para bilhetagem minuto‑a‑minuto.',
       },
       minute_price_applied_snapshot: {
         type: DataTypes.DECIMAL(14, 4),
@@ -126,12 +145,71 @@ module.exports = (sequelize) => {
         allowNull: true,
       },
       chatwoot_conversation_id: { type: DataTypes.STRING(64), allowNull: true },
+      /** Legado SIP / AMI — manter até Intelbras ficar só em `intelbras_unique_id`. */
       intelbras_call_id: { type: DataTypes.STRING(128), allowNull: true },
+      /** Legado Agora UI — usar `provider_channel_id` quando preenchido. */
       agora_channel_id: { type: DataTypes.STRING(128), allowNull: true },
       agora_rtc_token_cipher: {
         type: DataTypes.TEXT,
         allowNull: true,
         comment: 'Preferir TTL curto ou gerar JIT — armazenar só se estritamente necessário',
+      },
+      telecom_provider: {
+        type: DataTypes.STRING(24),
+        allowNull: true,
+        validate: {
+          isIn: {
+            args: [SESSION_TELECOM_PROVIDERS],
+            msg: 'telecom_provider inválido.',
+          },
+        },
+      },
+      /**
+       * Identificador de canal único por plataforma: `channelName` (Agora), canal SIP Asterisk ou id lógico.
+       */
+      provider_channel_id: {
+        type: DataTypes.STRING(160),
+        allowNull: true,
+      },
+      agora_uid_client: {
+        type: DataTypes.BIGINT,
+        allowNull: true,
+        comment: 'UID Agora RTC do cliente.',
+      },
+      agora_uid_specialist: {
+        type: DataTypes.BIGINT,
+        allowNull: true,
+        comment: 'UID Agora RTC da especialista.',
+      },
+      intelbras_unique_id: {
+        type: DataTypes.STRING(128),
+        allowNull: true,
+        comment: 'Identificador de chamada (ex. Asterisk Uniqueid) quando `telecom_provider = INTELBRAS`.',
+      },
+      intelbras_bridge_id: {
+        type: DataTypes.STRING(160),
+        allowNull: true,
+        comment: 'Bridge AMI/ARI opcional quando ambos ramos já estão conectados.',
+      },
+      telecom_status: {
+        type: DataTypes.STRING(32),
+        allowNull: false,
+        defaultValue: 'PENDING',
+        validate: {
+          isIn: {
+            args: [SESSION_TELECOM_STATUSES],
+            msg: 'telecom_status inválido.',
+          },
+        },
+      },
+      rtc_end_reason: {
+        type: DataTypes.STRING(512),
+        allowNull: true,
+        comment: 'Payload bruto (ex.: reason Agora em 104) — paralelo ao `ended_reason_code` normalizado.',
+      },
+      rtc_duration_seconds: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
       },
       client_entered_ip: {
         type: DataTypes.STRING(45),
@@ -147,7 +225,7 @@ module.exports = (sequelize) => {
         type: DataTypes.ENUM(...SESSION_END_REASONS),
         allowNull: true,
         comment:
-          'Determina causa exata para auditoria (“hard cut por saldo” vs cliente saindo, etc.).',
+          'Encerramento normalizado incluindo `NO_BALANCE_HARD_CUT`, `NETWORK_ERROR`, `MANUAL`.',
       },
       billing_closed_at: { type: DataTypes.DATE, allowNull: true },
     },
@@ -168,6 +246,8 @@ module.exports = (sequelize) => {
         { fields: ['status'] },
         { fields: ['queue_id'] },
         { fields: ['started_at'] },
+        { fields: ['telecom_provider'] },
+        { fields: ['telecom_status'] },
       ],
     }
   );
@@ -175,5 +255,10 @@ module.exports = (sequelize) => {
   Session.SESSION_STATUSES = SESSION_STATUSES;
   Session.SESSION_MODALITIES = SESSION_MODALITIES;
   Session.SESSION_END_REASONS = SESSION_END_REASONS;
+  Session.TELECOM_PROVIDERS = SESSION_TELECOM_PROVIDERS;
+  Session.TELECOM_STATUSES = SESSION_TELECOM_STATUSES;
+  Session.LIVE_PROVIDERS = SESSION_TELECOM_PROVIDERS;
+  Session.RTC_LIVE_STATUSES = SESSION_TELECOM_STATUSES;
+
   return Session;
 };

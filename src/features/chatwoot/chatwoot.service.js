@@ -142,6 +142,60 @@ function isInboundContactPhoneAllowedForIa(parsed) {
   return false;
 }
 
+/** JID de grupo WhatsApp (Evolution / Baileys): contém `@g.us` (chats 1:1 usam `@s.whatsapp.net` / `@c.us`). */
+function stringLooksLikeWhatsappGroupJid(s) {
+  if (!s || typeof s !== 'string') return false;
+  return s.toLowerCase().includes('@g.us');
+}
+
+/**
+ * Bloqueia IA em conversas de grupo (WhatsApp e metadados que o Chatwoot possa expor).
+ * Não altera o 200 do webhook — só não chama Claude nem faz upsert de lead para estes eventos.
+ */
+function isInboundGroupConversationForIa(parsed) {
+  const convAdd = parsed.conversation?.additional_attributes;
+  if (convAdd && typeof convAdd === 'object') {
+    if (convAdd.group === true || convAdd.is_group === true) return true;
+    const ct = `${convAdd.chat_type || convAdd.type || convAdd.conversation_type || ''}`.toLowerCase();
+    if (['group', 'supergroup', 'channel'].includes(ct)) return true;
+  }
+
+  const msg = parsed.message || parsed;
+  const stringsToScan = [];
+
+  for (const v of [
+    parsed.contact?.identifier,
+    parsed.sender?.identifier,
+    msg.sender?.identifier,
+    parsed.conversation?.identifier,
+    parsed.conversation?.contact_inbox?.source_id,
+    parsed.contact_inbox?.source_id,
+    msg.source_id,
+    parsed.source_id,
+    parsed.conversation?.meta?.sender?.identifier,
+  ]) {
+    if (v != null && `${v}`.trim()) stringsToScan.push(`${v}`.trim());
+  }
+
+  const shallowAttrs = [convAdd, msg.additional_attributes, parsed.contact?.additional_attributes];
+  for (const bag of shallowAttrs) {
+    if (!bag || typeof bag !== 'object') continue;
+    for (const val of Object.values(bag)) {
+      if (typeof val === 'string' && val.includes('@')) stringsToScan.push(val.trim());
+      if (val && typeof val === 'object' && !Array.isArray(val)) {
+        for (const inner of Object.values(val)) {
+          if (typeof inner === 'string' && inner.includes('@')) stringsToScan.push(inner.trim());
+        }
+      }
+    }
+  }
+
+  for (const s of stringsToScan) {
+    if (stringLooksLikeWhatsappGroupJid(s)) return true;
+  }
+  return false;
+}
+
 function mergeUtmData(existing, incoming) {
   const a = existing && typeof existing === 'object' && !Array.isArray(existing) ? { ...existing } : {};
   const b = incoming && typeof incoming === 'object' && !Array.isArray(incoming) ? incoming : {};
@@ -388,6 +442,14 @@ async function processWebhookEnvelopeImpl(rawBody) {
     chatwootWebhookLog('skipped', { why: 'mensagem_nao_inbound_contact', conversationId });
     return { skipped: true, reason: 'ignoramos mensagens de agente/outgoing ou sender ≠ contact' };
   }
+  if (isInboundGroupConversationForIa(parsed)) {
+    chatwootWebhookLog('skipped', { why: 'conversa_grupo_ou_canal', conversationId });
+    return {
+      skipped: true,
+      reason: 'conversa de grupo/canal — IA não responde (ex.: WhatsApp @g.us)',
+      ia_group_skipped: true,
+    };
+  }
   if (!textContent) {
     chatwootWebhookLog('skipped', { why: 'sem_texto', conversationId });
     return { skipped: true, reason: 'mensagem sem texto utilizável' };
@@ -429,18 +491,27 @@ async function processWebhookEnvelopeImpl(rawBody) {
   const provedor = (process.env.ACTIVE_AI_PROVIDER || 'anthropic').trim().toLowerCase();
   const iaService = resolveWebhookAiStrategy();
 
+  let flowSnapshot = null;
+  if (provedor === 'anthropic' && typeof anthropicService.getCurrentFlowState === 'function') {
+    flowSnapshot = await anthropicService.getCurrentFlowState(accountId, conversationId);
+  }
+
   chatwootWebhookLog('ia_request', {
     conversationId,
     contactId,
     identity: identity.kind,
     provedor,
+    flow_state: flowSnapshot?.stateKey ?? undefined,
     historico_turnos: history.length,
     ultima_msg_chars: latest.length,
     chatwoot_rows: rows.length,
   });
 
   const t0 = Date.now();
-  const reply = await iaService.generateReply(history, latest);
+  const reply =
+    provedor === 'anthropic' && typeof anthropicService.generateReplyForChatwoot === 'function'
+      ? await anthropicService.generateReplyForChatwoot(history, latest, { accountId, conversationId })
+      : await iaService.generateReply(history, latest);
   const msIa = Date.now() - t0;
 
   chatwootWebhookLog('ia_response', {

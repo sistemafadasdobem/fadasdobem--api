@@ -40,7 +40,13 @@ Prospectos oriundos do **Chatwoot** (sem `User`) são persistidos como **`leads`
 
 ### Provedores de IA — padrão Strategy (Chatwoot webhook)
 
-O webhook em **`src/features/chatwoot/chatwoot.service.js`** é agnóstico do motor: lê o histórico da conversa na API Chatwoot (`fetchWebhookConversationRows`), monta turnos `user`/`assistant` em **`src/features/chatwoot/chatwoot.aiHistory.js`** e invoca **`generateReply(historico, mensagemUsuario)`** na instância escolhida por **`ACTIVE_AI_PROVIDER`** (`anthropic` → `features/anthropic/anthropic.service.js`, `openai` → `features/openai/openai.service.js`). Assim, **Claude** (*Messages API* + *Tool Use*, `tools: [{ name, description, input_schema }]`) e **OpenAI** (*Chat Completions* + function *tools*) partilham o mesmo contrato de entrada; o fluxo Assistants/Threads (`replyForUserPlainText` + `identity`) permanece disponível na OpenAI para outros casos de uso com *state* em `openai_thread_id`.
+O webhook em **`src/features/chatwoot/chatwoot.service.js`** mantém o fluxo de histórico Chatwoot → turnos em **`src/features/chatwoot/chatwoot.aiHistory.js`**. O motor é escolhido por **`ACTIVE_AI_PROVIDER`**.
+
+- **Anthropic (produção recomendada neste pacote):** **Motor de Fluxo** persistido por conversa — `getCurrentFlowState` (log) + `generateReplyForChatwoot(historico, ultima, { accountId, conversationId })`, com estados e ferramentas declarados em **`src/features/anthropic/anthropic.workflow.config.js`** e textos estáveis em **`anthropic.messages.js`**. Ver **[`ANTHROPIC_FLOW_ENGINE.md`](./ANTHROPIC_FLOW_ENGINE.md)**.
+
+- **OpenAI:** continua a expor **`generateReply(historico, mensagemUsuario)`** (*Chat Completions* + *tools*); o fluxo Assistants/Threads (`replyForUserPlainText` + `identity` + `openai_thread_id`) permanece para outros casos de uso.
+
+Assim, Claude (*Messages API* + *Tool Use*) no Chatwoot acopla **estado de conversa** configurável em ficheiro sem reescrever o serviço de orquestração.
 
 ---
 
@@ -49,7 +55,7 @@ O webhook em **`src/features/chatwoot/chatwoot.service.js`** é agnóstico do mo
 | Módulo | Localização típica | Notas |
 |--------|-------------------|--------|
 | **Auth** | `src/features/auth/` | Registo, login, *refresh*, *logout*, recuperação/redefinição de palavra‑passe, verificação de e‑mail, `GET/PATCH /me`, constantes e utilitário de auditoria. |
-| **Anthropic** | `src/features/anthropic/`, `src/providers/anthropic/` | Ciclo Claude, *tools* opcionais e *prompts*. |
+| **Anthropic** | `src/features/anthropic/`, `src/providers/anthropic/` | Ciclo Claude, *prompts*, **Flow Engine** (`workflow.config`, `messages`, Redis/PG), *tools*. |
 | **Evolution** | `src/features/evolution/`, `src/providers/evolution/` | Administração de instâncias Evolution API onde aplicável. |
 | **Chatwoot** | `src/features/chatwoot/`, `src/providers/chatwoot/` | Webhook e cliente da API Chatwoot. |
 | **Database** | `src/models/`, `src/config/database.js` | Sequelize / PostgreSQL. |
