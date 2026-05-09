@@ -5,6 +5,7 @@
   "main": "app.js",
   "scripts": {
     "migrate": "node scripts/run-migrations.js",
+    "seed:homolog": "node scripts/seed-dev-homolog.js",
     "start": "node app.js",
     "dev": "node --watch app.js"
   },

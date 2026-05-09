@@ -31,6 +31,9 @@ app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 
+/** Mini front estático (ex.: `public/agora-test.html`) — mesma origem que `/api` evita CORS. */
+app.use(express.static(path.join(__dirname, 'public'), { index: false }));
+
 app.use('/api', routes);
 
 app.get('/ping', (_req, res) => {

@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mini Front — Agora + Fadas do Bem API (homologação)</title>
+  <script src="https://download.agora.io/sdk/release/AgoraRTC_N.js"></script>
+  <style>
+    :root {
+      font-family: system-ui, sans-serif;
+      background: #0f1419;
+      color: #e7ecf1;
+      --accent: #3d9cf5;
+      --border: #2a3441;
+    }
+    body {
+      margin: 0;
+      padding: 16px;
+      max-width: 900px;
+      margin-inline: auto;
+    }
+    h1 { font-size: 1.25rem; margin-top: 0; }
+    h2 { font-size: 0.95rem; color: #9aa8b3; margin: 1.2rem 0 0.5rem; }
+    fieldset {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 14px;
+      margin-bottom: 14px;
+      background: #151b22;
+    }
+    legend { padding: 0 8px; color: var(--accent); }
+    label { display: block; font-size: 0.8rem; color: #9aa8b3; margin-bottom: 4px; }
+    input, select {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 8px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #0f1419;
+      color: #e7ecf1;
+      margin-bottom: 10px;
+    }
+    button {
+      padding: 10px 16px;
+      border-radius: 6px;
+      border: none;
+      background: var(--accent);
+      color: #071018;
+      font-weight: 600;
+      cursor: pointer;
+      margin-right: 8px;
+      margin-bottom: 8px;
+    }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    button.secondary { background: #2a3441; color: #e7ecf1; }
+    #log {
+      font-family: ui-monospace, monospace;
+      font-size: 12px;
+      background: #0a0e12;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      height: 220px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .video-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 12px;
+    }
+    @media (max-width: 640px) { .video-row { grid-template-columns: 1fr; } }
+    .video-box {
+      background: #000;
+      border-radius: 8px;
+      aspect-ratio: 16/10;
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    .video-box h3 {
+      font-size: 11px;
+      margin: 0;
+      padding: 6px 8px;
+      background: #1a222c;
+      color: #9aa8b3;
+    }
+    .video-box .inner { width: 100%; height: calc(100% - 30px); min-height: 120px; }
+    #hardCutOverlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 99999;
+      background: rgba(180, 20, 20, 0.94);
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      text-align: center;
+      padding: 24px;
+    }
+    #hardCutOverlay.visible { display: flex; }
+    #hardCutOverlay h1 {
+      font-size: clamp(1.5rem, 5vw, 2.2rem);
+      color: #fff;
+      text-shadow: 0 2px 12px #000;
+      margin: 0 0 12px;
+    }
+    #hardCutOverlay p { color: #ffe0e0; max-width: 420px; }
+    .hint { font-size: 0.75rem; color: #7d8a93; margin-top: 6px; }
+    .config-readonly {
+      font-size: 0.85rem;
+      line-height: 1.5;
+      padding: 10px;
+      background: #0a0e12;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+    }
+    .config-readonly code { color: #7dd3fc; }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <h1>Mini Front — Homologação Agora + API</h1>
+  <p class="hint">
+    Sirva esta página a partir <strong>do mesmo host</strong> que a API (ex. <code>https://teu-dominio/agora-test.html</code>)
+    para o browser carregar <code>AGORA_APP_ID</code> do servidor via <code>GET /api/v1/config/public</code>.
+  </p>
+
+  <fieldset>
+    <legend>Configuração (servidor)</legend>
+    <div id="configStatus" class="config-readonly">A carregar <code>/api/v1/config/public</code>…</div>
+    <button type="button" class="secondary" id="btnReloadCfg">Recarregar config da API</button>
+  </fieldset>
+
+  <fieldset>
+    <legend>Passo 1 — Login</legend>
+    <label>Email</label>
+    <input type="email" id="email" autocomplete="username" />
+    <label>Senha (padrão após <code>npm run seed:homolog</code> — ver <code>.env.example</code>)</label>
+    <input type="password" id="password" autocomplete="current-password" />
+    <button type="button" id="btnLogin" disabled>1. Fazer Login</button>
+    <p class="hint">Conta <strong>Cliente</strong> criada pelo seed de homologação.</p>
+  </fieldset>
+
+  <fieldset>
+    <legend>Passo 2 — Sessão</legend>
+    <label>Specialist ID (UUID da taróloga — preenchido automaticamente se existir na BD)</label>
+    <input type="text" id="specialistId" placeholder="uuid da especialista" />
+    <button type="button" id="btnSession" disabled>2. Criar Sessão</button>
+  </fieldset>
+
+  <fieldset>
+    <legend>Passo 3 — Vídeo</legend>
+    <label>Papel no token RTC (Hard Cut no <strong>cliente</strong> → <strong>audience</strong>)</label>
+    <select id="tokenRole">
+      <option value="audience" selected>audience (cliente — UID alinhado ao kick)</option>
+      <option value="publisher">publisher (taróloga — outro UID)</option>
+    </select>
+    <button type="button" id="btnCall" disabled>3. Iniciar Chamada de Vídeo</button>
+    <button type="button" class="secondary" id="btnLeave">Sair do canal</button>
+  </fieldset>
+
+  <h2>Vídeo</h2>
+  <div class="video-row">
+    <div class="video-box">
+      <h3>Local</h3>
+      <div id="local" class="inner"></div>
+    </div>
+    <div class="video-box">
+      <h3>Remoto</h3>
+      <div id="remote" class="inner"></div>
+    </div>
+  </div>
+
+  <h2>Logs</h2>
+  <div id="log"></div>
+
+  <div id="hardCutOverlay" aria-live="assertive">
+    <h1>VOCÊ FOI DESCONECTADO (TEMPO ESGOTADO)!</h1>
+    <p>O servidor pode ter aplicado kicking-rule (Hard Cut). Verifique também a consola do browser.</p>
+    <button type="button" id="btnDismissOverlay">Fechar alerta</button>
+  </div>
+
+  <script>
+    (function () {
+      var DEFAULT_HOMOLOG_PASSWORD = 'Homolog@2026';
+      var API_BASE = '';
+      var agoraAppIdFromServer = '';
+      var jwt = null;
+      var sessionId = null;
+      var client = null;
+      var localTracks = [];
+      var logEl = document.getElementById('log');
+
+      function log(msg) {
+        var t = new Date().toISOString().slice(11, 23);
+        logEl.textContent += '[' + t + '] ' + msg + '\n';
+        logEl.scrollTop = logEl.scrollHeight;
+        console.log('[agora-test]', msg);
+      }
+
+      function apiUrl(subPath) {
+        var p = subPath.startsWith('/') ? subPath : '/' + subPath;
+        return API_BASE + p;
+      }
+
+      function setFormEnabled(ok) {
+        document.getElementById('btnLogin').disabled = !ok;
+      }
+
+      async function loadPublicConfig() {
+        API_BASE = String(window.location.origin || '').replace(/\/$/, '') + '/api/v1';
+        document.getElementById('configStatus').innerHTML =
+          'A pedir <code>' + API_BASE + '/config/public</code>…';
+
+        var res = await fetch(apiUrl('/config/public'), { credentials: 'same-origin' });
+        var json = await res.json();
+        if (!res.ok || !json.sucesso) {
+          document.getElementById('configStatus').innerHTML =
+            '<strong>Erro</strong> ao ler config: HTTP ' + res.status + ' — ' + (json.mensagem || '');
+          log('Config público falhou: ' + (json.mensagem || res.status));
+          setFormEnabled(false);
+          return;
+        }
+        var d = json.dados || {};
+        agoraAppIdFromServer = (d.agora_app_id || '').trim();
+
+        var lines = [];
+        lines.push('API (esta página): <code>' + API_BASE + '</code>');
+        lines.push('Agora App ID (do <code>.env</code> do servidor): <code>' + (agoraAppIdFromServer || '(vazio — defina AGORA_APP_ID)') + '</code>');
+        if (d.api_version) lines.push('API versão: <code>' + d.api_version + '</code>');
+        if (d.homolog_login_email) {
+          lines.push('Login homolog (e-mail): <code>' + d.homolog_login_email + '</code>');
+          document.getElementById('email').value = d.homolog_login_email;
+        }
+        if (d.homolog_specialist_id) {
+          lines.push('Specialist ID (seed): <code>' + d.homolog_specialist_id + '</code>');
+          document.getElementById('specialistId').value = d.homolog_specialist_id;
+        } else {
+          lines.push('<em>specialist_id</em> ainda não na BD — correr <code>npm run seed:homolog</code> no servidor.');
+        }
+        document.getElementById('configStatus').innerHTML = lines.join('<br/>');
+
+        document.getElementById('password').value = DEFAULT_HOMOLOG_PASSWORD;
+        setFormEnabled(true);
+
+        if (!agoraAppIdFromServer) {
+          log('Aviso: AGORA_APP_ID vazio no servidor — join pode falhar.');
+        } else {
+          log('Config carregada do servidor (App ID length ' + agoraAppIdFromServer.length + ').');
+        }
+      }
+
+      function getAppIdForJoin(apiTokenResponse) {
+        var d = apiTokenResponse || {};
+        return (d.appId || d.app_id || agoraAppIdFromServer || '').trim();
+      }
+
+      function showHardCut() {
+        document.getElementById('hardCutOverlay').classList.add('visible');
+        log('OVERLAY: desconexão detetada (possível Hard Cut / kick).');
+      }
+
+      document.getElementById('btnReloadCfg').addEventListener('click', function () {
+        loadPublicConfig().catch(function (e) {
+          log('Recarregar config: ' + (e && e.message));
+        });
+      });
+
+      document.getElementById('btnDismissOverlay').addEventListener('click', function () {
+        document.getElementById('hardCutOverlay').classList.remove('visible');
+      });
+
+      document.getElementById('btnLogin').addEventListener('click', async function () {
+        log('A iniciar login…');
+        jwt = null;
+        try {
+          var res = await fetch(apiUrl('/auth/login'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              email: document.getElementById('email').value.trim(),
+              password: document.getElementById('password').value,
+            }),
+          });
+          var json = await res.json();
+          if (!res.ok || !json.sucesso) {
+            log('Login falhou: HTTP ' + res.status + ' — ' + (json.mensagem || JSON.stringify(json)));
+            return;
+          }
+          jwt = json.dados && json.dados.access_token;
+          if (!jwt) {
+            log('Resposta sem access_token em dados.');
+            return;
+          }
+          log('Logado com sucesso.');
+          document.getElementById('btnSession').disabled = false;
+        } catch (e) {
+          log('Login erro: ' + (e && e.message));
+        }
+      });
+
+      document.getElementById('btnSession').addEventListener('click', async function () {
+        if (!jwt) {
+          log('Sem JWT — faça login primeiro.');
+          return;
+        }
+        log('A criar sessão…');
+        sessionId = null;
+        try {
+          var res = await fetch(apiUrl('/sessions'), {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: 'Bearer ' + jwt,
+            },
+            body: JSON.stringify({
+              specialist_id: document.getElementById('specialistId').value.trim(),
+              modality: 'VIDEO',
+            }),
+          });
+          var json = await res.json();
+          if (!res.ok || !json.sucesso) {
+            log('Criar sessão falhou: HTTP ' + res.status + ' — ' + (json.mensagem || JSON.stringify(json)));
+            return;
+          }
+          sessionId = json.dados && json.dados.id;
+          if (!sessionId) {
+            log('Resposta sem dados.id');
+            return;
+          }
+          log('Sessão criada: ' + sessionId);
+          if (json.dados.provider_channel_id) {
+            log('Canal (provider_channel_id): ' + json.dados.provider_channel_id);
+          }
+          document.getElementById('btnCall').disabled = false;
+        } catch (e) {
+          log('Sessão erro: ' + (e && e.message));
+        }
+      });
+
+      async function leaveChannel() {
+        if (localTracks.length && client) {
+          localTracks.forEach(function (t) {
+            try {
+              t.stop();
+              t.close();
+            } catch (e) {}
+          });
+          localTracks = [];
+        }
+        if (client) {
+          try {
+            await client.leave();
+          } catch (e) {}
+          client = null;
+        }
+        document.getElementById('local').innerHTML = '';
+        document.getElementById('remote').innerHTML = '';
+      }
+
+      document.getElementById('btnLeave').addEventListener('click', async function () {
+        await leaveChannel();
+        log('Saída manual do canal.');
+      });
+
+      document.getElementById('btnCall').addEventListener('click', async function () {
+        if (!jwt || !sessionId) {
+          log('Falta JWT ou session_id.');
+          return;
+        }
+        await leaveChannel();
+
+        log('A pedir token RTC…');
+        var role = document.getElementById('tokenRole').value || 'audience';
+        var tokenUrl =
+          apiUrl('/sessions/' + encodeURIComponent(sessionId) + '/token') +
+          '?expiresIn=3600&role=' +
+          encodeURIComponent(role);
+
+        try {
+          var res = await fetch(tokenUrl, {
+            headers: { Authorization: 'Bearer ' + jwt },
+          });
+          var json = await res.json();
+          if (!res.ok || !json.sucesso) {
+            log('Token falhou: HTTP ' + res.status + ' — ' + (json.mensagem || JSON.stringify(json)));
+            return;
+          }
+          var d = json.dados || {};
+          var token = d.token;
+          var channel = d.channel_name || d.channelName;
+          var uid = d.uid;
+          var appId = getAppIdForJoin(d);
+          if (!token || !channel || uid == null || !appId) {
+            log('Token incompleto na resposta: ' + JSON.stringify(Object.keys(d)));
+            return;
+          }
+          log('Token gerado (canal: ' + channel + ', uid: ' + uid + ', appId: ' + appId.slice(0, 8) + '…).');
+
+          if (typeof AgoraRTC === 'undefined') {
+            log('AgoraRTC não carregou — ver script AgoraRTC_N.js.');
+            return;
+          }
+
+          client = AgoraRTC.createClient({ mode: 'rtc', codec: 'vp8' });
+
+          client.on('connection-state-change', function (cur, prev, reason) {
+            log('connection-state-change: ' + prev + ' → ' + cur + (reason != null ? ' (reason: ' + reason + ')' : ''));
+            if (cur === 'DISCONNECTED' || cur === 'ABORTED' || cur === 'FAILED') {
+              showHardCut();
+            }
+          });
+
+          client.on('user-published', async function (user, mediaType) {
+            await client.subscribe(user, mediaType);
+            log('Subscrito remoto uid=' + user.uid + ' tipo=' + mediaType);
+            if (mediaType === 'video') {
+              var r = document.getElementById('remote');
+              r.innerHTML = '';
+              user.videoTrack.play(r);
+            }
+            if (mediaType === 'audio') {
+              user.audioTrack.play();
+            }
+          });
+
+          if (typeof client.on === 'function') {
+            client.on('exception', function (e) {
+              log('Agora exception: ' + (e && (e.msg || e.code || JSON.stringify(e))));
+            });
+          }
+
+          var uidJoin = typeof uid === 'number' ? uid : parseInt(String(uid), 10);
+          await client.join(appId, channel, token, uidJoin);
+          log('Conectado ao canal Agora (join OK).');
+
+          if (role === 'publisher' || role === '') {
+            localTracks = await AgoraRTC.createMicrophoneAndCameraTracks();
+            await client.publish(localTracks);
+            var loc = document.getElementById('local');
+            loc.innerHTML = '';
+            localTracks[1].play(loc);
+            log('Publicação local áudio+vídeo (publisher).');
+          } else {
+            log('Modo audience — sem publish local (alinha ao UID cliente / Hard Cut).');
+          }
+        } catch (e) {
+          log('Chamada erro: ' + (e && e.message));
+          console.error(e);
+        }
+      });
+
+      log('Mini Front: à espera da config do servidor…');
+      loadPublicConfig().catch(function (e) {
+        log('Bootstrap falhou: ' + (e && e.message));
+        document.getElementById('configStatus').innerHTML =
+          '<strong>Erro</strong> ' + (e && e.message) + ' — abra esta página no mesmo host que a API.';
+        setFormEnabled(false);
+      });
+    })();
+  </script>
+</body>
+</html>
