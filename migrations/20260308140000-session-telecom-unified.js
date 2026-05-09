@@ -33,14 +33,17 @@ module.exports = {
       await q(`ALTER TABLE sessions DROP COLUMN channel_name;`);
       colSet.delete('channel_name');
     }
-    await q(`
-      UPDATE sessions
-      SET provider_channel_id = COALESCE(
-        NULLIF(trim(provider_channel_id::text), ''),
-        NULLIF(trim(agora_channel_id::text), '')
-      )
-      WHERE provider_channel_id IS NULL OR trim(provider_channel_id::text) = '';
-    `);
+    // Em bases antigas `agora_channel_id` pode não existir (modelo vs migrações).
+    if (colSet.has('agora_channel_id')) {
+      await q(`
+        UPDATE sessions
+        SET provider_channel_id = COALESCE(
+          NULLIF(trim(provider_channel_id::text), ''),
+          NULLIF(trim(agora_channel_id::text), '')
+        )
+        WHERE provider_channel_id IS NULL OR trim(provider_channel_id::text) = '';
+      `);
+    }
 
     await q(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS telecom_status VARCHAR(32);`);
     if (colSet.has('rtc_live_status')) {
