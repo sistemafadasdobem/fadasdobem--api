@@ -27,7 +27,13 @@ module.exports = (sequelize) => {
       },
       client_id: {
         type: DataTypes.UUID,
-        allowNull: false,
+        allowNull: true,
+      },
+      lead_id: {
+        type: DataTypes.UUID,
+        allowNull: true,
+        comment:
+          'Quando PIX é gerado no fluxo WhatsApp antes de existir conta — carteira só após reconciliação pós-conversão.',
       },
       user_id: {
         type: DataTypes.UUID,
@@ -191,6 +197,7 @@ module.exports = (sequelize) => {
           ),
         },
         { fields: ['client_id'] },
+        { fields: ['lead_id'] },
         { fields: ['status'] },
         { fields: ['mp_payment_id'] },
         { fields: ['mp_merchant_order_id'] },

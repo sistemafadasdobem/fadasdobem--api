@@ -15,6 +15,8 @@ erDiagram
   users ||--o| staff_profiles : perfil-interno
   clients }o--|| pricing_levels : pricing_level_id
   specialists ||--|{ specialist_modalities : modality
+  specialists ||--|{ specialist_schedules : agenda_semanal
+  specialists ||--o{ specialist_status_logs : auditoria_presenca
   specialists }o--o{ oracles : specialist_oracles
   clients ||--|{ queues : fila_espera
   specialists ||--o{ queues : reserva-fixa_opcional
@@ -51,6 +53,8 @@ erDiagram
 | `specialist_modalities` | `specialist_id` | N:1 | `specialists.id` |
 | `specialist_oracles` | `specialist_id` | N:1 | `specialists.id` |
 | `specialist_oracles` | `oracle_id` | N:1 | `oracles.id` |
+| `specialist_schedules` | `specialist_id` | N:1 | `specialists.id` |
+| `specialist_status_logs` | `specialist_id` | N:1 | `specialists.id` |
 | `ledger_accounts` | `client_id` | N:1 opcional | `clients.id` |
 | `ledger_accounts` | `specialist_id` | N:1 opcional | `specialists.id` |
 | `transaction_ledger` | `debit_account_id` | N:1 | `ledger_accounts.id` |
@@ -123,5 +127,7 @@ Registros com `deleted_at` preenchido **não devem impedir reuso de chaves de ne
 ## Manutenção
 
 Sempre que um novo `belongsTo`/`hasMany` for adicionado em `index.js` **ou** surgir novo `*_id` em algum Model, atualizar a matriz de FK deste ficheiro (coluna + destino esperado).
+
+**Presença / SLA:** linhas em `specialist_status_logs` vêm sobretudo dos hooks de `Specialist` definidos em `src/models/index.js`. `Specialist.update({ ... }, { where })` só dispara `afterUpdate` por linha quando `individualHooks: true`; caso contrário, completar auditoria ao persistir sempre via instâncias (`reload` + `save`) ou garantir esse *flag*.
 
 O atalho em `src/documentacao/Relacionamentos_FKs.md` não duplica conteúdo; serve apenas para redirects de documentação legada.

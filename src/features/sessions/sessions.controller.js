@@ -13,6 +13,32 @@ module.exports = {
   }),
 
   /**
+   * POST /api/v1/sessions/:id/review · Auth Bearer (**cliente** titular da sessão)
+   * Body: `rating` (1–5 inteiro), `comment` opcional, `is_public` opcional (default true)
+   */
+  submitSessionReview: catchAsyncRoute(async (req, res) => {
+    const dados = await sessionsService.submitSessionReview(req.user, req.params.id, req.body || {}, {
+      ip: req.ip || req.socket?.remoteAddress,
+      userAgent: req.headers['user-agent'],
+      correlationId: req.headers['x-request-id'],
+    });
+    return responderSucesso(res, dados, 'Avaliação registada.', 201);
+  }),
+
+  /**
+   * PATCH /api/v1/sessions/:id/ritual · Auth Bearer (**TAROLOGA** titular da consulta)
+   * Body: `post_session_message` (max 1500 caracteres)
+   */
+  patchSessionRitual: catchAsyncRoute(async (req, res) => {
+    const dados = await sessionsService.patchPostSessionRitual(req.user, req.params.id, req.body || {}, {
+      ip: req.ip || req.socket?.remoteAddress,
+      userAgent: req.headers['user-agent'],
+      correlationId: req.headers['x-request-id'],
+    });
+    return responderSucesso(res, dados, 'Mensagem pós-consulta guardada.', 200);
+  }),
+
+  /**
    * GET /api/v1/sessions/:id/token · Auth Bearer
    * Consulta 1-a-1: o token é sempre gerado com privilégio de publicação (RtcRole.PUBLISHER).
    * Query `role` é legado e ignorada. Opcional: `expiresIn` / `expiresInSeconds` (60–86400).

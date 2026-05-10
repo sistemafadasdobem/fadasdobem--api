@@ -14,7 +14,20 @@ module.exports = (sequelize) => {
         type: DataTypes.UUID,
         allowNull: false,
       },
+      /** Nome completo legal / preferencial do cliente — fonte única para `nome_id`. */
+      nome_completo: {
+        type: DataTypes.STRING(160),
+        allowNull: true,
+      },
+      /** Nome resumido visível público conforme política Nice (`business.config.NAME_ID_GENERATION_LOGIC`). */
+      nome_id: {
+        type: DataTypes.STRING(160),
+        allowNull: true,
+      },
+      /** Legado compatível até migrações de API consumirem só `nome_completo`. */
       nome: { type: DataTypes.STRING(160), allowNull: true },
+      /** Apresentação informal (ex.: "Mari"). Distinto do `nome_id`. */
+      apelido: { type: DataTypes.STRING(80), allowNull: true },
       tratar_por: { type: DataTypes.STRING(120), allowNull: true },
       data_nascimento: { type: DataTypes.DATEONLY, allowNull: true },
       cpf: { type: DataTypes.STRING(14), allowNull: true },
@@ -52,6 +65,21 @@ module.exports = (sequelize) => {
       modelName: 'Client',
       tableName: 'clients',
       paranoid: true,
+      hooks: {
+        beforeValidate: (inst) => {
+          const business = require('../config/business.config');
+          const { deriveNomeIdFromNomeCompleto } = require('../utils/name.util');
+          const full =
+            `${inst.get('nome_completo') ?? ''}`.trim() || `${inst.get('nome') ?? ''}`.trim();
+          if (!full) {
+            return;
+          }
+          inst.set(
+            'nome_id',
+            deriveNomeIdFromNomeCompleto(full, business.NAME_ID_GENERATION_LOGIC)
+          );
+        },
+      },
       indexes: [
         { fields: ['pricing_level_id'] },
         {

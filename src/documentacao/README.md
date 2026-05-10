@@ -66,6 +66,19 @@ A **vitrine de especialistas** (Fase 2) está materializada na *feature* `src/fe
 
 ---
 
+## Espelhos de código (além de `models/` e `features/`)
+
+| Área | Pasta em `documentacao/` | Código correspondente |
+|------|-------------------------|------------------------|
+| **Features HTTP / domínio** | [`features/README.md`](./features/README.md) | `src/features/` |
+| **Providers externos** | [`providers/README.md`](./providers/README.md) | `src/providers/` |
+| **Middlewares Express** | [`middlewares/README.md`](./middlewares/README.md) | `src/middlewares/` |
+| **Utils transversais** | [`utils/README.md`](./utils/README.md) | `src/utils/` |
+| **Scripts operacionais** | [`scripts/README.md`](./scripts/README.md) | `scripts/` (raiz do pacote) |
+| **Migrations** | [`migrations/README.md`](./migrations/README.md) + [`migrations/Registo_Migracoes.md`](./migrations/Registo_Migracoes.md) | `migrations/*.js`; guia operacional na raiz: [`../../migrations/README.md`](../../migrations/README.md) |
+
+---
+
 ## Referência campo a campo e ER
 
 Alterações físicas ao esquema devem estar reflectidas primeiro na base ou migrações, e seguidamente em **`src/documentacao/models/`** e **`models/Relacionamentos_FKs.md`**. O ER e dicionário de alto nível estão preservados no [README](../../README.md) da raiz do pacote.

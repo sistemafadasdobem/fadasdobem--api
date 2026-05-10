@@ -7,6 +7,7 @@ const flowEngine = require('./anthropic.workflow.engine');
 const flowStore = require('./anthropic.workflow.store');
 const anthropicMessages = require('./anthropic.messages');
 const errMessages = anthropicMessages.erros;
+const chatwootClient = require('../../providers/chatwoot/chatwoot.client');
 
 /** Só silencia com ANTHROPIC_SERVICE_LOG=false explícito no env. */
 function anthropicDiagLog(summary, fields = {}) {
@@ -35,6 +36,69 @@ function extractAssistantPlainText(content) {
   return parts.join('\n').trim();
 }
 
+function clipOneLineText(s, max) {
+  return `${s ?? ''}`.trim().replace(/\s+/g, ' ').slice(0, max);
+}
+
+function normalizeCrisisConfidence(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(1, n));
+}
+
+/**
+ * Executa alerta aos supervisores (Chatwoot) quando o modelo usa `trigger_crisis_intervention`.
+ * Sem `accountId`/`conversationId`, só regista métricas e orienta o modelo sobre CVV na resposta pública.
+ */
+async function fulfillTriggerCrisisInterventionTool(input, chatwootCtx = {}) {
+  const aid = `${chatwootCtx.accountId ?? ''}`.trim();
+  const cid = `${chatwootCtx.conversationId ?? ''}`.trim();
+
+  const detected_sentiment = clipOneLineText(input?.detected_sentiment, 600);
+  const suggested_action = clipOneLineText(input?.suggested_action, 900);
+  const conf = normalizeCrisisConfidence(input?.confidence_score);
+
+  let alert_dispatched_chatwoot = false;
+  let post_error = null;
+
+  if (aid && cid) {
+    const body =
+      `🚨 ALERTA DE CRISE: IA detectou risco real. Motivo: ${suggested_action || '(motivo não informado)'}. Assuma a conversa imediatamente.` +
+      `\n(Relatório da IA · sentimento: ${detected_sentiment || '(n/d)'} · confiança declarada: ${
+        conf === null ? '—' : conf.toFixed(2)
+      })`;
+    try {
+      await chatwootClient.postPrivateNote(aid, cid, body.slice(0, 4000));
+      alert_dispatched_chatwoot = true;
+    } catch (e) {
+      post_error = String(e?.message || e);
+      console.error('[anthropic:crisis] postPrivateNote falhou:', post_error);
+    }
+  }
+
+  anthropicDiagLog('crisis_intervention_tool_used', {
+    account_id: aid || undefined,
+    conversation_id: cid || undefined,
+    alert_dispatched_chatwoot,
+    sentiment_chars: detected_sentiment.length,
+  });
+
+  /** @type {Record<string, unknown>} */
+  const out = {
+    ok: true,
+    status: 'Sucesso no alerta',
+    alert_dispatched_chatwoot,
+    orientacao_para_sua_resposta_publica: prompts.CLAUDE_CRISIS_AFTER_TOOL_PUBLIC_HINT,
+  };
+  if (!aid || !cid) {
+    out.aviso_interno =
+      'Conversa sem identificadores Chatwoot — nota de supervisão não foi enviada pelo pipeline actual.';
+  }
+  if (post_error) out.post_error_post_chatwoot = post_error;
+
+  return out;
+}
+
 /**
  * Motor de Fluxo Chatwoot: estado persistido por conversa (`flowStore`).
  * `chatwoot.service` deve usar este método em vez de `generateReply`.
@@ -46,6 +110,7 @@ function extractAssistantPlainText(content) {
 async function generateReplyForChatwoot(historico, mensagemUsuario, ctx) {
   const accountId = `${ctx.accountId || ''}`.trim();
   const conversationId = `${ctx.conversationId || ''}`.trim();
+
   if (!accountId || !conversationId) {
     anthropicDiagLog('flow_fallback', { reason: 'ids_chatwoot_ausentes' });
     return generateReply(historico, mensagemUsuario);
@@ -60,6 +125,13 @@ async function generateReplyForChatwoot(historico, mensagemUsuario, ctx) {
     persisted && persisted.slots && typeof persisted.slots === 'object' ? { ...persisted.slots } : {};
 
   async function execTool(name, input) {
+    if (name === 'trigger_crisis_intervention') {
+      const payload = await fulfillTriggerCrisisInterventionTool(input, {
+        accountId,
+        conversationId,
+      });
+      return JSON.stringify(payload);
+    }
     if (name === 'set_flow_state') {
       const rawNext = typeof input?.next_state === 'string' ? input.next_state.trim() : '';
       try {
@@ -172,6 +244,10 @@ async function generateReply(historico, mensagemUsuario) {
   const tools = anthropicTools.messagesApiToolDefinitionsForFlowState(cfgCv.tools, []);
 
   async function execToolBridge(name, input) {
+    if (name === 'trigger_crisis_intervention') {
+      const payload = await fulfillTriggerCrisisInterventionTool(input, {});
+      return JSON.stringify(payload);
+    }
     if (name === 'set_flow_state') {
       return JSON.stringify({
         ok: false,
@@ -199,6 +275,68 @@ async function generateReply(historico, mensagemUsuario) {
  */
 async function replyForUserPlainText(_identity, plaintext) {
   return generateReply([], `${plaintext ?? ''}`);
+}
+
+function normalizeFsmBirthToIso(x) {
+  const s = `${x ?? ''}`.trim();
+  if (!s) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!m) return null;
+  const dd = m[1].padStart(2, '0');
+  const mm = m[2].padStart(2, '0');
+  return `${m[3]}-${mm}-${dd}`;
+}
+
+function parseFsmProfileJsonEnvelope(rawAssistantText) {
+  const blob = `${rawAssistantText ?? ''}`.trim();
+  if (!blob) return null;
+  const start = blob.indexOf('{');
+  const end = blob.lastIndexOf('}');
+  if (start < 0 || end <= start) return null;
+  try {
+    return JSON.parse(blob.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Texto livre T5 (`Lead FSM`): extrai `nome_completo`, `data_nascimento`, `email` via Claude Messages API sem tools.
+ * @returns {Promise<{ ok: boolean, nome_completo?: string|null, data_nascimento_iso?: string|null, email?: string|null, erro?: string, incompleto?: boolean }>}
+ */
+async function extractFsmLeadClienteProfile(freeText) {
+  const raw = `${freeText ?? ''}`.trim().slice(0, 3800);
+  if (!raw) return { ok: false, erro: 'texto_ausente' };
+  try {
+    const assistant = await generateReplyFromMessages([{ role: 'user', content: raw }], {
+      system: prompts.FSM_LEAD_PROFILE_EXTRACTION_SYSTEM,
+      tools: [],
+      max_tokens: 384,
+    });
+    const parsed = parseFsmProfileJsonEnvelope(assistant);
+    if (!parsed || typeof parsed !== 'object')
+      return { ok: false, erro: assistant === prompts.FALLBACK_IA_UNAVAILABLE ? 'ia_offline' : 'json_illegível' };
+
+    let email = `${parsed.email ?? ''}`.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) email = '';
+
+    const nomeCompleto = `${parsed.nome_completo ?? ''}`.trim().slice(0, 260);
+    const dataIso = normalizeFsmBirthToIso(parsed.data_nascimento ?? parsed.data_iso ?? '');
+    const okNome = nomeCompleto.length >= 5;
+    const okIso = Boolean(dataIso);
+    const okMail = Boolean(email);
+    return {
+      ok: Boolean(okNome && okIso && okMail),
+      nome_completo: okNome ? nomeCompleto : null,
+      data_nascimento_iso: okIso ? dataIso : null,
+      email: okMail ? email : null,
+      incompleto: !(okNome && okIso && okMail),
+    };
+  } catch (e) {
+    console.warn('[anthropic:fsm_extract]', e.message || e);
+    return { ok: false, erro: 'extracao_erro' };
+  }
 }
 
 /**
@@ -255,10 +393,12 @@ async function generateReplyFromMessages(seedMessages, options = {}) {
 
     for (let round = 0; round < maxToolRounds; round += 1) {
       const roundStart = Date.now();
+      const cap =
+        typeof options.max_tokens === 'number' && options.max_tokens > 0 ? options.max_tokens : maxTokens();
       // eslint-disable-next-line no-await-in-loop
       const response = await client.messages.create({
         model: defaultModelId(),
-        max_tokens: maxTokens(),
+        max_tokens: cap,
         system,
         ...(tools.length ? { tools } : {}),
         messages,
@@ -335,4 +475,5 @@ module.exports = {
   getCurrentFlowState,
   replyForUserPlainText,
   generateReplyFromMessages,
+  extractFsmLeadClienteProfile,
 };

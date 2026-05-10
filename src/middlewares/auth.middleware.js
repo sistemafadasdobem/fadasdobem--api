@@ -48,6 +48,7 @@ module.exports = async function authMiddleware(req, res, next) {
       throw new AppError('Conta bloqueada. Contate o suporte.', 401, null, true);
     }
 
+    req.jwtClaims = payload;
     req.user = user;
     return next();
   } catch (err) {

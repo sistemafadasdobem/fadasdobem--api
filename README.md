@@ -1,139 +1,134 @@
-# API REST — Plataforma Fadas do Bem
+# 🌌 Plataforma Fadas do Bem — Core Engine v1.0
 
-Pacote **`fadasdobem--api`** (Node.js, Express, Sequelize e PostgreSQL). Este ficheiro é a **entrada oficial** ao repositório da API para execução local, visão da estrutura de código e **contrato técnico consolidado da Fase 1** (domínio de dados).
+**Pacote técnico:** `fadasdobem--api` · Node.js **≥ 18** · Express · Sequelize · PostgreSQL · Redis · BullMQ  
 
-**Estado atual (homologação / Easypanel):** a **Fase 1 — fundação** e a **Fase 2 — autenticação e vitrine** da API encontram‑se **concluídas**. O detalhe de estado de entrega, módulos entregues e backlog associado está em **[`src/documentacao/README.md`](./src/documentacao/README.md)**.
+Este repositório é o **motor de backend** da operação Nice: pré-atendimento, consultas ao vivo com cobrança minuto‑a‑minuto, finanças de dupla entrada, integrações de telecomunicação e IA conversacional atrás dos canais WhatsApp/App.
 
 ---
 
-## Requisitos e execução
+## Resumo Executivo
 
-| Item | Detalhe |
-|------|---------|
-| **Runtime** | Node.js **≥ 18** |
-| **Base de dados** | PostgreSQL (configuração via `.env`; ver `.env.example`) |
-| **Instalação** | `npm install` |
-| **Variáveis** | Copiar `.env.example` → `.env` e preencher segredos e URLs |
+A Plataforma Fadas do Bem é uma **infraestrutura completa de atendimento consultivo** orientada ao tempo real:
+
+- Clientes integram‑se através de **autenticação forte**, níveis dinâmicos de preço, **saldo carteira**, **consultas multimodais** (texto · voz · vídeo na web ou telefonia) e **reviews** formais ligadas ao ciclo de sessão.
+- O **cronômetro comercial “2+X+2”**, o **consumo económico** e o **bloqueio duro quando o saldo esgota** são enforced no servidor — não apenas no cliente.
+- **Mercado Pago**, **Mercado Ledger** (`transaction_ledger`) e webhooks garantem trilhos de pagamento auditáveis, com extensibilidade para repasses PIX e relatórios de gestão.
+
+O Core Engine está desenhado para correr atrás do **Easypanel** ou qualquer hospedeiro compatível (`npm run start`), com migrações automáticas na subida opcional pelo `app.js`, filas assimétricas e workers dedicados onde necessário.
+
+---
+
+## Destaques de Inteligência (Claude / Anthropic)
+
+- **Skill de intervenção em crise (`trigger_crisis_intervention`)** — ferramentas no modelo Claude que, quando acionadas, disparam alerta contextual ao Chatwoot (nota privada à equipa Nice) antes de responder à utilizadora final, preservando segurança e escalação humana.
+- **Histórico e memória de contexto** — enriquece respostas com histórico de conversa recuperado através do pipeline Chatwoot + motor Anthropic, mantendo coerência no diálogo e reduzindo repetições.
+- **Agente comercial estruturado (WhatsApp / Lead FSM)** — fluxos guiados por estados máquina (menus, botões Evolution, PIX real, webhook Mercado Pago e transição automática quando o pagamento é captado), combinando prompts centralizados e armazenamento de estado onde aplicável (`bot_conversation_flow_states`).
+
+---
+
+## Destaques de Confiabilidade (Arquitetura)
+
+| Pilar | Papel técnico |
+|--------|----------------|
+| **Redis** | Mutex efémero **`SET specialist_mutex:{id} … NX EX 30`** na liquidação pós‑pagamento: **concorrência zero** quando duas tentativas de reserva/aviso chegam ao mesmo tempo; TTL curto garante recuperação mesmo em falhas. |
+| **BullMQ** | Fila **`delivery-queue`** (outbound assíncrono pós‑transação Postgres). Após **`commit`** seguro nos webhooks PIX/cartão, jobs com **retry e backoff exponencial** consomem o “cofre de entregas” (`pending_deliveries`). Falhas terminais levantam nota privada no Chatwoot. |
+| **Ledger (razão)** | Todas as movimentações monetárias materializadas em **`transaction_ledger`** com **`debit_account_id`** e **`credit_account_id`** sempre preenchidos, montantes positivos, metadados e chaves **`idempotency_key`** onde importa reconciliar webhooks Mercado Pago. |
+
+Cofre bruto **`payment_orders.raw_webhook_payload`** permite reconstruir qualquer notificação de gateway já recebida.
+
+---
+
+## Módulos Ativos
+
+### [Financeiro]
+
+- Checkout **Mercado Pago Transparente**: **PIX** e **cartão** (Bricks), `external_reference` como âncora de idempotência.
+- Webhook HTTP **processado antes da resposta 2xx**, para que cenários recuperáveis (mutex ocupado · Redis transitório · pressão Postgres) regressam **`503`** e o gateway repete oficialmente.
+- Após autorização registos **`PAYMENT_ACCREDITED`**, reserva física Postgres da especialista (quando há `checkout_context.specialist_id`) e **`PendingDelivery`** (payload T8) na mesma transação.
+- Reversões e chargebacks atualizam lotes **`client_credit_lots`** quando aplicável (`REFUND`, `CHARGEBACK` no Ledger).
+- **Piso económico de 15 minutos** configurável (`SESSION_MINIMUM_FLOOR_MINUTES`): créditos **`FLOOR_COMPENSATION`** proporcionais a `MAX(0, floor − minutos_pagos_consumidos_snapshot)` quando a sessão fecha com motivos elegíveis (`business.config`).
+- **Liquidações manuais** via API interna (ex.: comandos Chatwoot) usando `approveManualAttendancePayment`.
+- **Liquidação comercial pós‑telecom COMPLETED (`economics_settled_at`):** `CLIENT_WALLET` → `PLATFORM_SUSPENSE` (**`SESSION_CONSUMPTION`**), splits **`COMMISSION_SPLIT`** para **`SPECIALIST_EARNINGS`** e **`PLATFORM_REVENUE`** com percentual **`specialist_commission_pct_snapshot`** (sobre valor absorvido da carteira, até o total tarifável da sessão).
+- **`POST /api/v1/payouts/request`** · **`GET /api/v1/payouts/me`** — pedidos PIX da taróloga com validação prévia no ledger (`SPECIALIST_EARNINGS` menos reserva de pedidos abertos legíveis pelo serviço).
+- **`PATCH /api/v1/sessions/:id/ritual`** — mensagem **`post_session_message`** (≤ 1500) pela tarólogo titular quando a sessão está encerrada à luz telecom/lifecycle · **`POST …/review`** com middleware **`CLIENTE`** explícito.
+- **Nova rota Gestora Nice:** **`GET /api/v1/admin/finance/transactions`** — extrato global do razão paginável (filtros `reference_type`, `occurred_from` / `occurred_to`).
+- **`GET /api/v1/admin/finance/dashboard`** — agregações rápidas de pedidos pagos versus soma carteiras cache.
+
+### [Telecom]
+
+- **Agora.io RTC** (`/sessions/:id/token`) — vídeo · voz web (canal determinístico por sessão · UID BIGINT · token publisher 1‑a‑1 · webhooks **NCS 103 / 104** para join/leave e durações).
+- **Intelbras Wide Voice REST** (`/sessions/intelbras-webhook`) — normalização opcional aos mesmos enums de sessão onde integrado por telefone.
+- **Cronômetro 2+X+2** — zona grátis apresentada antes/depois do bloco cobrado, **WARNING** antes do zero, **`BillingEngine`** incremental com **hard‑cut ao esgotamento** e motivos estruturais (`BALANCE_ZERO`, `HARD_CUT_BALANCE_ZERO`, etc.).
+
+### [Segurança]
+
+- **JWT access + refresh** com rotação e revogação de dispositivo (`OTP` onde aplicável).
+- **Step‑up JWT** opcional (**janela de cinco minutos** para dados sensíveis / alterações de cadastro forte).
+- **Identidade oficial em quatro níveis nomeados** durante registo cliente (Nome legal completo · Nome público oficial · tratamento público opcional · apelido carinhoso) + **DOB obrigatório** com verificação de elegibilidade 18+/formato.
+- Papéis: **CLIENTE · TARÓLOGA · GESTORA (+ atendente técnico Chatwoot)** segregados pelo middleware JWT e validações intra‑serviço.
+
+### [Operacional]
+
+- **Filas Inteligentes** (`/api/v1/queues`) · **promoção ao encerramento de sessão telecom** quando `COMPLETED` · **salas Socket.io** nomeadas (`subscribed_specialist_queue`).
+- **Leads Agenda** — tabela **`leads`**, `interested_specialist_id`, notificações e **AuditLog** em retomadas automáticas quando a especialista regressa ONLINE.
+- **Chatwoot** — Slash commands escritos apenas por agente humano (**não são encaminhados à IA**) — lista completa mais abaixo no *Manual da Atendente*.
+- **Evolution Admin** auxiliar ao painel (instâncias Evolution API / infra WhatsApp onde aplicável).
+- **Reviews** estruturais (**`POST /api/v1/sessions/:id/review`**) apenas pela titular cliente com `audit_logs.action = SESSION_CLIENT_REVIEW_SUBMIT`.
+
+---
+
+## Manual da Atendente (Slash Commands Chatwoot)
+
+| Comando | Efeito operacional conciso |
+|---------|----------------------------|
+| **`/buscar_cliente`** | Resolve o contacto da conversa em **User + Client**, mostra nível de preço atual, carteira (**saldo líquido**), lotes disponíveis, histórico de sessões relevantes por nota privada. |
+| **`/gerar_link`** **ou** **`/gerar_link <uuid>`** | Cria **`Session`** com status **READY**, modalidade **VIDEO**, especialista (**UUID explícito** ou inferida pela taróloga **assignee** no Chatwoot), gera **token Agora RTC** e leave private note com link **`FRONTEND_URL/sala`** e parâmetros de canal/token. |
+| **`/lancar_pagamento …`** | Lançamento manual económico usando `paymentsService.approveManualAttendancePayment` (**carteira cliente** + Ledger + **`ClientCreditLot`**) segundo catálogo de pacotes (**`payments.constants`**) ou valor avulso. |
+| **`/ver_tarologas`** | Lista **tarólogas ≠ OFFLINE** com estado público atual e primeira sessão telecom ainda **`PENDING`/`ACTIVE`/`WARNING`** se existente (útil antes de distribuir clientes VIP). |
+
+> Nota técnica: qualquer comando desconhecido devolve sugestões automáticas (string `SLASH_HELP` em `chatwoot.commands.js`).
+
+---
+
+## Novos endpoints (fechaamento técnico)
+
+| Verbo · Path | Segurança | Descrição |
+|--------------|-----------|-----------|
+| **`POST /api/v1/sessions/:id/review`** | JWT Bearer + **`requireClienteRole`** (**CLIENTE** titular) | **`rating`** 1‑5 inteiro · **`comment`** opcional até 4 000 chars · **`is_public`** default `true`. Uma avaliação por sessão. Só após encerramento elegível (critérios em código). |
+| **`PATCH /api/v1/sessions/:id/ritual`** | JWT **TAROLOGA** + titular **`session.specialist_id`** | **`post_session_message`** (body) até **1500** caracteres → coluna **`sessions.post_session_message`**. |
+| **`POST /api/v1/payouts/request`** · **`GET /api/v1/payouts/me`** | JWT **TAROLOGA** | Saque solicitado apenas com saldo **disponível** no ledger (**`SPECIALIST_EARNINGS`** menos pedidos já reservados). Histórico com `pix_key`, `processed_at`, estados. |
+| **`GET /api/v1/admin/finance/transactions`** | JWT **GESTORA** apenas | Lista paginação estável (**`limit` 1‑200**, **`offset`**) com filtros **`reference_type`**, **`occurred_from`/`occurred_to` (ISO‑8601)**. Cada item expande lado **debitante** vs **credor** (**tipos conta**, cliente/taróloga associadas quando disponíveis nos `ledger_accounts`). |
+
+---
+
+## Executar rapidamente · dependências infra
 
 ```bash
-cp .env.example .env
-# Ajustar PostgreSQL, JWT, Redis (se utilizado em fases seguintes), etc.
-
-npm run start       # Produção/simples
-npm run dev         # Reload com node --watch
+cp .env.example .env   # Postgres · JWT · MP · Agora · Chatwoot · Redis obrigatório para filas Redis/Mutex quando pagamentos com especialista são usados …
+npm install
+npm run migrate        # modo CLI que fecha Sequelize no fim
+npm run dev            # desenvolvimento (node --watch)
 ```
 
-A porta padrão é **`3000`** (`PORT` no `.env`). Probes típicos: `GET /health`, `GET /ping`; rotas da API agrupadas em **`/api/*`** — por exemplo **`GET /api/v1/health`**.
+Probes rápidos: **`GET /ping`**, **`GET /health`** (ou **`/api/v1/health`**) · Coleções exemplo em **`src/postman/`** · modelo relacional granular em **`src/documentacao/`**.
 
-Para smoke tests HTTP, coleções exemplo em **`src/postman/`**.
-
----
-
-## Organização do código-fonte (`src/`)
-
-Para **separação de preocupações** e **manutenibilidade**:
-
-- **`src/providers`** — Integrações externas (clientes HTTP, SDKs Anthropic/OpenAI, Resend/e-mail, Chatwoot, Evolution API). Adaptação de protocolos e formatos **sem** regra de negócio central do domínio.
-- **`src/features`** — Casos de uso e módulos de negócio (autenticação, webhook Chatwoot/IA, etc.). Dependências apenas no sentido **feature → provider**, não o inverso.
-- **`src/documentacao`** — Documentação mantida ao lado da implementação. A especificação **campo a campo** do modelo persistido encontra-se em **`src/documentacao/models/`** e em **`Relacionamentos_FKs.md`** (ver também [Documentação complementar](./src/documentacao/README.md)).
-- **`src/config`**, **`src/middlewares`**, **`src/utils`**, **`src/models`** — Configuração, cruzamentos HTTP transversais, utilitários e modelos Sequelize alinhados ao esquema.
-
-### Estratégia Lead → Cliente (pré-pagamento)
-
-Contactos que chegam pelo **Chatwoot** sem conta em `users` são persistidos na tabela **`leads`** (*soft delete*), com `source`, `utm_data` (JSONB) e `last_interaction_at`. O webhook de mensagem **não** cria mais utilizador provisório: deduplica por `chatwoot_contact_id`, actualiza a conversa corrente e alimenta a IA (OpenAI usa o próprio registo `Lead` para *Threads*; Anthropic lê o histórico via API Chatwoot). A conversão formal (`convertLeadToClient` em `auth.service.js`) cria `User` + `Client`, copia `chatwoot_*` e `openai_thread_id`, marca o *lead* como `CONVERTED` e reconcilia `sessions` pelo `chatwoot_conversation_id` quando aplicável. Detalhe: [`src/documentacao/models/Lead.md`](./src/documentacao/models/Lead.md).
+Workers BullMQ opcionais: env **`DELIVERY_QUEUE_WORKER=true`** num processo dedicado (**apenas uma réplica**) para consumir `delivery-queue`; restantes apenas produtor HTTP.
 
 ---
 
-## Contrato técnico — Fase 1 (modelo de dados)
+## Status das Fases (Backend apenas)
 
-Formaliza modelo relacional, função de cada entidade núcleo no domínio da aplicação e decisões de modelagem tratadas como invariantes para evoluções posteriores. O desenho privilegia **alta disponibilidade** e suporte transacional à **fila de atendimento**, ao **cronômetro de consultas** com política comercial **2+X+2**, e a uma **camada financeira integrada ao Mercado Pago**, com rastreabilidade de cobrança e governança de saldo compatível com **LGPD**.
+Declarado oficialmente pela equipa CTO:
 
-Artefatos sob **`src/features`**, **`src/providers`** e **`src/models`** permanecem obrigados à consistência com este contrato.
+| Marco | Estado |
+|------|--------|
+| **Fase 1 · Fundamentos de dados · LGPD‑ready modeling** | **100% BACKEND READY** |
+| **Fase 2 · Autenticação · vitrine económica** | **100% BACKEND READY** |
+| **Fase 3 · Telecom unificado · filas vivo** | **100% BACKEND READY** |
+| **Fase 5 · Canal WhatsApp FSM IA · pagamentos assimétricos confiáveis** | **100% BACKEND READY** |
 
-### Diagrama macro (ERD)
-
-Ambientes compatíveis com Mermaid renderizam o bloco diretamente.
-
-```mermaid
-erDiagram
-  leads }o--o| users : "apos_conversao_chatwoot_contact_id"
-  users ||--o| clients : "perfil cliente"
-  users ||--o| specialists : "perfil especialista"
-  users ||--o| staff_profiles : "gestoras e atendentes"
-  users ||--o{ oauth_accounts : "login social"
-  users ||--o{ user_devices : "push e dispositivos"
-  users ||--o{ otps : "recuperacao e OTP"
-  users ||--o{ platform_integrations : "whatsapp chatwoot painel gestora"
-
-  clients }o--o| pricing_levels : "preco dinamico"
-  specialists ||--o{ specialist_modalities : "modalidades"
-  specialists }o--o{ oracles : "via specialist_oracles"
-
-  clients ||--o{ queues : "fila espera"
-  specialists ||--o{ queues : "reserva opcional"
-
-  queues ||--o{ sessions : "consulta ao vivo"
-  clients ||--o{ sessions : "cliente na sessao"
-  specialists ||--o{ sessions : "especialista na sessao"
-
-  sessions ||--o| reviews : "avaliacao pos sessao"
-
-  clients ||--o{ payment_orders : "checkout MP"
-  users ||--o{ payment_orders : "pagador alternativo"
-
-  payment_orders ||--o{ client_credit_lots : "credito concedido"
-
-  clients ||--o{ ledger_accounts : "carteira e contas"
-  specialists ||--o{ ledger_accounts : "comissao e repasses"
-  ledger_accounts ||--o{ transaction_ledger : "dupla entrada"
-
-  specialists ||--o{ payout_requests : "pedido de repasse"
-
-  users ||--o{ audit_logs : "acoes gestoras"
-```
-
-### Dicionário de dados consolidado
-
-|Tabela|Papel no negócio|
-|------|------------------|
-|**`users`**|Identidade única da plataforma (login, papéis, LGPD/versionamento de aceite e cadastro macro). Une clientes, tarólogas, gestoras e atendentes no mesmo núcleo de autenticação.|
-|**`oauth_accounts`**|Vínculo com provedores de login federado sem perder relação única com a conta principal.|
-|**`user_devices`**|Registro de aparelhos e tokens para notificações (push), com auditoria por dispositivo.|
-|**`staff_profiles`**|Dados corporativos de **Gestoras** e **Atendentes**, separados do perfil público de clientes e especialistas.|
-|**`clients`**|Perfil da **cliente** com dados progressivos de cadastro (inclui endereços e LGPD sócio-técnica via `users`) e vínculo com **níveis de precificação** e exceções comerciais acordadas com a Gestora.|
-|**`leads`**|Prospectos **Chatwoot** antes da conta cliente: estado de funil, origem/`utm`, rascunho PIX opcional (*paranóico*, apto remarketing); conversão cria linha em `users`/`clients` alinhando o mesmo `chatwoot_contact_id`.|
-|**`specialists`**|Perfil público-operacional das **tarólogas**, incluindo vitrine (bio, PIX), disponibilidade, integrações (**Chatwoot**, **Intelbras**, **Agora**) e **trava de pré-reserva** para evitar conflitos no checkout.|
-|**`specialist_modalities`**|Define quais canais (**texto**, **voz**, **vídeo**) cada especialista atende, alimentando matching e filas.|
-|**`oracles`** e **`specialist_oracles`**|Catálogo editorial de **oráculos** e vínculos N:M com as especialistas, para vitrine filtrável e relatórios.|
-|**`pricing_levels`**|Camada de **preço dinâmico**, separando **tarifa texto/voz** e **tarifa vídeo**, com promoções aplicáveis (ex.: primeira consulta).|
-|**`queues`**|Representa clientes **em espera** para entrada na consulta ao vivo (com especialista opcional ou fila inteligente).|
-|**`sessions`**|Momento econômico central: **cronômetro**, modalidade (**2+X+2**), snapshots de **valor por minuto** e **motivo de encerramento**, integrações ao vivo e trilha mágica (**magic link**) para sala segura.|
-|**`reviews`**|Avaliação **pós-consulta** ligada unicamente à sessão, com moderação possível pela Gestora.|
-|**`payment_orders`**|Pedido de cobrança e **snapshot completo Mercado Pago** (PIX, cartão, status crus, NFS-e onde aplicável); âncora de **idempotência** para webhooks.|
-|**`client_credit_lots`**|Pacotes (**avulso** vs **sessão única**) com eventual **expiração**, financiamento rastreado até o pagamento original.|
-|**`ledger_accounts`**|Carteiras lógicas (cliente, especialista, plataforma etc.) onde se acumula e reconcilia saldo econômico.|
-|**`transaction_ledger`**|Razão em **partidas dobradas** — cada lançamento com débito e crédito explícitos, evitando “furos” contábeis.|
-|**`payout_requests`**|Formalização dos **pedidos de repasse (saque PIX)** solicitados pelas especialistas e processados pela operação.|
-|**`otps`**|Fluxos seguros de **OTP** para recuperação e verificações sensíveis, com limites de tentativa.|
-|**`audit_logs`**|Trilhas de decisões da **Gestora** sobre o sistema (*quem mudou o quê, quando*, com deltas), essencial para auditoria e segurança operacional.|
-|**`platform_integrations`**|Centraliza no banco os **credenciais, status de conexão e QR Codes** geridos pelo Painel (**WhatsApp Evolution API** + **Chatwoot** global/config). Habilita proxy administrativo pela API sem depender de ferramentas externas manuais no dia a dia da cliente.|
-
-### Decisões arquiteturais críticas
-
-- **Transações de dupla entrada (Ledger)** — Cada movimentação econômica relevante é representada simultaneamente como **saída** de uma conta e **entrada** em outra, com valores auditáveis (`transaction_ledger`). A reconciliação com o esperado pela **Gestora** e pela **Financeira** fica garantida; evitam-se carteiras inexplicavelmente divergentes ou inconsistências que afetem cliente e reputação.
-
-- **Cofre de webhooks (`raw_webhook_payload` em JSONB)** — Os retornos do **Mercado Pago** podem conter nuances ainda não mapeadas em colunas estruturadas. A persistência do **payload bruto** viabiliza **investigações forenses**, suporte, **chargebacks** e atualizações de integração sem perda de história de origem (“nenhum byte importante se perde quando o gateway evoluir”).
-
-- **Índices parciais com *soft delete* (único apenas para linhas “vivas”)** — Com exclusão lógica compatível com **LGPD** (*soft delete*, `deleted_at` preenchido), **e-mails**, **CPFs** quando informados e outras chaves públicas não permanecem bloqueados indefinidamente apenas por registros inativos — permitindo novo cadastro legítimo alinhado ao consentimento sem travar onboarding indevido.
-
-- **Snapshots financeiros na própria `sessions`** — **Preço por minuto** aplicado naquele ciclo de consulta e **percentuais de comissão** (e derivados econômicos associados à sessão) são **congelados no encerramento**. Alterações posteriores em preço ou comissões **não reescrevem o passado**, preservando relatórios, **compliance** e apuração de períodos encerrados.
+> A **camada cliente web/app** será construída a montante destas APIs já congeladas e versionadas (**`/api/v1/*`** como fronteira oficial).
 
 ---
 
-## Referência campo a campo
-
-A especificação detalhada (tipos, nulidade, regras e índices) está fragmentada em **`src/documentacao/models/`** (por exemplo `User.md`, `Session.md`, `PaymentOrder.md`) e **`src/documentacao/models/Relacionamentos_FKs.md`**. Alterações ao esquema físico devem refletir primeiro o modelo persistido e, na mesma entrega ou após migrações, estes artefatos.
-
----
-
-*Escopo: **Fase 1 — modelo de dados**. Alterações de produto que impliquem mudanças de esquema ou invariantes de negócio devem atualizar primeiro o modelo persistido e, em seguida, este contrato.*
+*Documentação de campos físicos modelo persistidos continua dispersa sob **`src/documentacao/models`** — sempre actualizar aquele dossier sempre que migrações ampliarem o esquema.*

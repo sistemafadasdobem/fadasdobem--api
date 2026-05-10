@@ -7,13 +7,17 @@ const StaffProfile = require('./StaffProfile')(sequelize);
 const Oracle = require('./Oracle')(sequelize);
 const PricingLevel = require('./PricingLevel')(sequelize);
 const Client = require('./Client')(sequelize);
+const ClientDiary = require('./ClientDiary')(sequelize);
 const Specialist = require('./Specialist')(sequelize);
 const SpecialistModality = require('./SpecialistModality')(sequelize);
 const SpecialistOracle = require('./SpecialistOracle')(sequelize);
+const SpecialistSchedule = require('./SpecialistSchedule')(sequelize);
+const SpecialistStatusLog = require('./SpecialistStatusLog')(sequelize);
 const LedgerAccount = require('./LedgerAccount')(sequelize);
 const TransactionLedger = require('./TransactionLedger')(sequelize);
 const ClientCreditLot = require('./ClientCreditLot')(sequelize);
 const PaymentOrder = require('./PaymentOrder')(sequelize);
+const PendingDelivery = require('./PendingDelivery')(sequelize);
 const PayoutRequest = require('./PayoutRequest')(sequelize);
 const Queue = require('./Queue')(sequelize);
 const Session = require('./Session')(sequelize);
@@ -119,6 +123,16 @@ Client.belongsTo(PricingLevel, {
   as: 'pricing_level',
 });
 
+Client.hasMany(ClientDiary, {
+  foreignKey: 'client_id',
+  as: 'private_diaries',
+});
+
+ClientDiary.belongsTo(Client, {
+  foreignKey: 'client_id',
+  as: 'client',
+});
+
 /* --- Especialistas, vitrine --- */
 
 User.hasOne(Specialist, {
@@ -167,6 +181,64 @@ Specialist.belongsToMany(Oracle, {
 
 SpecialistOracle.belongsTo(Specialist, { foreignKey: 'specialist_id', as: 'specialist' });
 SpecialistOracle.belongsTo(Oracle, { foreignKey: 'oracle_id', as: 'oracle' });
+
+Specialist.hasMany(SpecialistSchedule, {
+  foreignKey: 'specialist_id',
+  as: 'agenda_horarios',
+});
+
+SpecialistSchedule.belongsTo(Specialist, {
+  foreignKey: 'specialist_id',
+  as: 'specialist',
+});
+
+Specialist.hasMany(SpecialistStatusLog, {
+  foreignKey: 'specialist_id',
+  as: 'historico_status',
+});
+
+SpecialistStatusLog.belongsTo(Specialist, {
+  foreignKey: 'specialist_id',
+  as: 'specialist',
+});
+
+/** Trilho de SLA / disputas: mudanças de estado operacional. `Model.update(..., { where })` só dispara com `individualHooks: true`. */
+Specialist.addHook('afterCreate', async (specialistInstance, opts) => {
+  const st = specialistInstance.getDataValue('status');
+  if (!st) return;
+  try {
+    await SpecialistStatusLog.create(
+      {
+        specialist_id: specialistInstance.id,
+        previous_status: null,
+        new_status: st,
+        changed_at: new Date(),
+      },
+      { transaction: opts.transaction }
+    );
+  } catch (err) {
+    console.error('[Specialist.afterCreate/status-log]', specialistInstance?.id, err?.message || err);
+  }
+});
+
+Specialist.addHook('afterUpdate', async (specialistInstance, opts) => {
+  const prev = specialistInstance.previous('status');
+  const cur = specialistInstance.getDataValue('status');
+  if ((prev ?? null) === (cur ?? null) || cur == null) return;
+  try {
+    await SpecialistStatusLog.create(
+      {
+        specialist_id: specialistInstance.id,
+        previous_status: prev ?? null,
+        new_status: cur,
+        changed_at: new Date(),
+      },
+      { transaction: opts.transaction }
+    );
+  } catch (err) {
+    console.error('[Specialist.afterUpdate/status-log]', specialistInstance?.id, err?.message || err);
+  }
+});
 
 /* --- Contabilidade --- */
 
@@ -239,6 +311,16 @@ PaymentOrder.hasMany(ClientCreditLot, {
 
 ClientCreditLot.belongsTo(PaymentOrder, {
   foreignKey: 'payment_order_id',
+  as: 'payment_order',
+});
+
+PaymentOrder.hasMany(PendingDelivery, {
+  foreignKey: 'order_id',
+  as: 'pending_deliveries',
+});
+
+PendingDelivery.belongsTo(PaymentOrder, {
+  foreignKey: 'order_id',
   as: 'payment_order',
 });
 
@@ -366,6 +448,16 @@ Specialist.hasMany(Review, {
   as: 'reviews',
 });
 
+Specialist.hasMany(Lead, {
+  foreignKey: 'interested_specialist_id',
+  as: 'agenda_leads_interested',
+});
+
+Lead.belongsTo(Specialist, {
+  foreignKey: 'interested_specialist_id',
+  as: 'interested_specialist',
+});
+
 const db = {
   sequelize,
   User,
@@ -375,13 +467,17 @@ const db = {
   Oracle,
   PricingLevel,
   Client,
+  ClientDiary,
   Specialist,
   SpecialistModality,
   SpecialistOracle,
+  SpecialistSchedule,
+  SpecialistStatusLog,
   LedgerAccount,
   TransactionLedger,
   ClientCreditLot,
   PaymentOrder,
+  PendingDelivery,
   PayoutRequest,
   Queue,
   Session,

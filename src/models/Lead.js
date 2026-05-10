@@ -59,6 +59,12 @@ module.exports = (sequelize) => {
         type: DataTypes.STRING(128),
         allowNull: true,
       },
+      interested_specialist_id: {
+        type: DataTypes.UUID,
+        allowNull: true,
+        comment:
+          'Taróloga de interesse (Leads Agenda): dispara retomada quando ela fica ONLINE; pode espelhar utm_data.interested_specialist_id',
+      },
     },
     {
       sequelize,
@@ -75,6 +81,7 @@ module.exports = (sequelize) => {
         { fields: ['status'] },
         { fields: ['last_interaction_at'] },
         { fields: ['openai_thread_id'] },
+        { fields: ['interested_specialist_id'] },
       ],
     }
   );

@@ -4,7 +4,9 @@ const { User, Lead } = require('../../models');
 const AppError = require('../../utils/AppError');
 const { catchAsyncService } = require('../../utils/catchAsync.util');
 const chatwootClient = require('../../providers/chatwoot/chatwoot.client');
+const chatwootCommands = require('./chatwoot.commands');
 const chatwootAiHistory = require('./chatwoot.aiHistory');
+const returningSvc = require('./chatwoot.returning.service');
 const openaiService = require('../openai/openai.service');
 const anthropicService = require('../anthropic/anthropic.service');
 
@@ -32,6 +34,25 @@ function isIncomingVisitorMessage(parsed) {
     msg?.sender?.type ?? parsed.sender?.type ?? parsed.conversation?.meta?.sender?.type;
   if (String(senderType || '').toLowerCase() !== 'contact') return false;
   return true;
+}
+
+/**
+ * Slash commands escritos pela equipa: não disparam IA nem upsert de lead.
+ * `message_type` outgoing ou `sender.type` user-like; texto começa por `/`;
+ * sempre ignorar quando o sender é o contact (evita cliente começado com `/`).
+ */
+function isAttendantOutgoingSlash(parsed, trimmedContent) {
+  if (!trimmedContent || trimmedContent.charAt(0) !== '/') return false;
+  const msg = parsed.message || parsed;
+  const mt = msg?.message_type ?? msg?.type;
+  const outgoing =
+    `${mt ?? ''}`.toLowerCase() === 'outgoing' || mt === 1 || `${mt ?? ''}` === '1';
+
+  const senderType = `${msg?.sender?.type ?? parsed.sender?.type ?? ''}`.trim().toLowerCase();
+  if (senderType === 'contact') return false;
+
+  const userLike = senderType === 'user' || senderType === 'agent_bot' || senderType === 'agent';
+  return outgoing || userLike;
 }
 
 function extractContactId(parsed) {
@@ -350,20 +371,32 @@ async function findUserOrUpsertLeadByChatwoot(contactId, conversationId, parsed)
   const cid = `${contactId}`.trim();
   const conv = `${conversationId || ''}`.trim();
 
-  const user = await User.findOne({
+  const userByContact = await User.findOne({
     where: { chatwoot_contact_id: cid },
   });
-  if (user) {
+  if (userByContact) {
     if (conv) {
-      await user.update({ chatwoot_conversation_id: conv });
+      await userByContact.update({ chatwoot_conversation_id: conv });
     }
-    return { kind: 'user', user };
+    return { kind: 'user', user: userByContact };
   }
 
   const source = extractSourceChannelFromWebhook(parsed);
   const utmPatch = extractUtmPayloadFromWebhook(parsed);
   const phone = extractLeadPhone(parsed);
   const now = new Date();
+
+  if (phone && returningSvc.phoneDigitsOnly(phone).length >= 9) {
+    const userByPhone = await returningSvc.findUserClienteByPhoneDigits(phone);
+    if (userByPhone) {
+      await userByPhone.update({
+        chatwoot_contact_id: cid,
+        chatwoot_conversation_id: conv || userByPhone.chatwoot_conversation_id,
+        phone: userByPhone.phone || phone,
+      });
+      return { kind: 'user', user: userByPhone };
+    }
+  }
 
   let lead = await Lead.findOne({
     where: { chatwoot_contact_id: cid },
@@ -438,6 +471,21 @@ async function processWebhookEnvelopeImpl(rawBody) {
     });
     return { skipped: true, reason: 'ids ausentes' };
   }
+
+  if (textContent.length > 0 && isAttendantOutgoingSlash(parsed, textContent)) {
+    const slashAccountId = `${process.env.CHATWOOT_ACCOUNT_ID || ''}`.trim();
+    if (!slashAccountId) {
+      throw new AppError('CHATWOOT_ACCOUNT_ID não configurado.', 500, null, true);
+    }
+    chatwootWebhookLog('slash_command', { conversationId, contactId });
+    await chatwootCommands.handleCommand(textContent, slashAccountId, conversationId, contactId);
+    return {
+      skipped: true,
+      reason: 'comando atendente (slash) tratado sem IA',
+      attendant_slash_handled: true,
+    };
+  }
+
   if (!isIncomingVisitorMessage(parsed)) {
     chatwootWebhookLog('skipped', { why: 'mensagem_nao_inbound_contact', conversationId });
     return { skipped: true, reason: 'ignoramos mensagens de agente/outgoing ou sender ≠ contact' };
@@ -455,6 +503,40 @@ async function processWebhookEnvelopeImpl(rawBody) {
     return { skipped: true, reason: 'mensagem sem texto utilizável' };
   }
 
+  const identity = await findUserOrUpsertLeadByChatwoot(contactId, conversationId, parsed);
+
+  const accountId = `${process.env.CHATWOOT_ACCOUNT_ID || ''}`.trim();
+
+  /** Motor FSM Lead + Evolution (PostgreSQL-only). Não depende de `CHATWOOT_IA_AUTO_REPLY`. */
+  const chatLeadFsm = require('./chatwoot.workflow');
+  if (accountId && chatLeadFsm.shouldRunWhatsAppFsm(identity)) {
+    const wf = await chatLeadFsm.handleWhatsAppFsmInbound({
+      accountId,
+      conversationId,
+      parsed,
+      inboundText: textContent,
+      leadId: identity.kind === 'lead' ? identity.lead?.id : null,
+      contactId,
+      identity,
+    });
+    chatwootWebhookLog('lead_fsm_turn', {
+      conversationId,
+      contactId,
+      mode: wf.mode,
+      state: wf.state ?? null,
+      warnings: wf.warning ?? wf.warnings ?? null,
+    });
+    return {
+      replied: true,
+      provedor_ia: 'lead_fsm',
+      identity_kind: identity.kind,
+      userId: identity.kind === 'user' ? identity.user.id : null,
+      leadId: identity.kind === 'lead' ? identity.lead.id : null,
+      conversationId,
+      lead_fsm: wf,
+    };
+  }
+
   if (!isChatwootIaAutoReplyEnabled()) {
     chatwootWebhookLog('skipped', { why: 'CHATWOOT_IA_AUTO_REPLY_off', conversationId });
     return {
@@ -464,7 +546,9 @@ async function processWebhookEnvelopeImpl(rawBody) {
     };
   }
 
-  const identity = await findUserOrUpsertLeadByChatwoot(contactId, conversationId, parsed);
+  if (!accountId) {
+    throw new AppError('CHATWOOT_ACCOUNT_ID não configurado.', 500, null, true);
+  }
 
   if (!isInboundContactPhoneAllowedForIa(parsed)) {
     chatwootWebhookLog('skipped', {
@@ -477,11 +561,6 @@ async function processWebhookEnvelopeImpl(rawBody) {
       reason: 'telefone do contacto fora da whitelist de testes IA (CHATWOOT_IA_PHONE_WHITELIST)',
       ia_phone_blocked: true,
     };
-  }
-
-  const accountId = `${process.env.CHATWOOT_ACCOUNT_ID || ''}`.trim();
-  if (!accountId) {
-    throw new AppError('CHATWOOT_ACCOUNT_ID não configurado.', 500, null, true);
   }
 
   const rows = await fetchWebhookConversationRows(accountId, conversationId);

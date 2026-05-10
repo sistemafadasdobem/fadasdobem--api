@@ -2,6 +2,7 @@ const { Model, DataTypes } = require('sequelize');
 
 const REF_TYPES = [
   'PAYMENT_TOPUP',
+  'PAYMENT_ACCREDITED',
   'SESSION_CONSUMPTION',
   'COMMISSION_SPLIT',
   'REFUND',
@@ -10,6 +11,8 @@ const REF_TYPES = [
   'ADJUSTMENT_ADMIN',
   'CREDIT_EXPIRY',
   'RESERVATION_HOLD',
+  'SYSTEM_FLOOR_ADJUSTMENT',
+  'FLOOR_COMPENSATION',
 ];
 
 class TransactionLedger extends Model {}

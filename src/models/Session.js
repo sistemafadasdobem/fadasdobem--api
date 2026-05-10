@@ -228,6 +228,11 @@ module.exports = (sequelize) => {
           'Encerramento normalizado incluindo `NO_BALANCE_HARD_CUT`, `NETWORK_ERROR`, `MANUAL`.',
       },
       billing_closed_at: { type: DataTypes.DATE, allowNull: true },
+      economics_settled_at: {
+        type: DataTypes.DATE,
+        allowNull: true,
+        comment: 'Liquidações SESSION_CONSUMPTION + COMMISSION_SPLIT idempotentes concluídas',
+      },
     },
     {
       sequelize,

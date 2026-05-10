@@ -23,6 +23,8 @@ module.exports = (sequelize) => {
         defaultValue: 'PENDING',
       },
       pix_destination: { type: DataTypes.STRING(256), allowNull: true },
+      /** Redundante com destino quando o canal é apenas chave bruta PIX (preferência nova API `/payouts`). */
+      pix_key: { type: DataTypes.STRING(256), allowNull: true },
       pix_type: {
         type: DataTypes.STRING(32),
         allowNull: true,
@@ -40,6 +42,11 @@ module.exports = (sequelize) => {
       },
       requested_at: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
       paid_at: { type: DataTypes.DATE, allowNull: true },
+      processed_at: {
+        type: DataTypes.DATE,
+        allowNull: true,
+        comment: 'Eco de processamento efectivo espelho de `paid_at` quando marcação Gestora automatizada',
+      },
       metadata: { type: DataTypes.JSONB, allowNull: true },
       gross_reference_amount: {
         type: DataTypes.DECIMAL(14, 4),

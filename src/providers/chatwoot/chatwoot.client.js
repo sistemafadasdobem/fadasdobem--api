@@ -29,15 +29,25 @@ async function postOutboundMessage(accountId, conversationId, body) {
   return http.post(path, body);
 }
 
-/** Resposta de agente para o visitante (`outgoing`). */
-async function postTextReply(accountId, conversationId, plainText) {
+/**
+ * POST `outgoing` — `private: true` cria nota de equipa (amarela).
+ * @param {boolean} [isPrivate=false]
+ */
+async function postConversationOutgoingMessage(accountId, conversationId, plainText, isPrivate = false) {
   return postOutboundMessage(accountId, conversationId, {
     content: plainText,
     message_type: 'outgoing',
-    private: false,
+    private: Boolean(isPrivate),
   });
 }
 
+async function postTextReply(accountId, conversationId, plainText) {
+  return postConversationOutgoingMessage(accountId, conversationId, plainText, false);
+}
+
+async function postPrivateNote(accountId, conversationId, plainText) {
+  return postConversationOutgoingMessage(accountId, conversationId, plainText, true);
+}
 /**
  * GET `/api/v1/accounts/{account_id}/conversations/{conversation_id}/messages`
  * — params `after` / `before` conforme MessageFinder do Chatwoot.
@@ -56,6 +66,19 @@ function dedupeMessagesById(list) {
     if (m && m.id != null) map.set(m.id, m);
   }
   return [...map.values()];
+}
+
+/**
+ * GET conversa única — usado para `meta.assignee` (ex.: comando `/gerar_link` sem UUID).
+ * @returns {Promise<object>}
+ */
+async function fetchConversation(accountId, conversationId) {
+  const http = buildHttp();
+  const path = `/accounts/${encodeURIComponent(accountId)}/conversations/${encodeURIComponent(
+    conversationId
+  )}`;
+  const { data } = await http.get(path);
+  return data || {};
 }
 
 /**
@@ -89,7 +112,10 @@ module.exports = {
   baseChatwootUrl,
   buildHttp,
   postOutboundMessage,
+  postConversationOutgoingMessage,
+  postPrivateNote,
   postTextReply,
   listConversationMessages,
+  fetchConversation,
   fetchRecentConversationMessagesAscending,
 };

@@ -1,5 +1,15 @@
 /** Execuções locais disparadas pelo Assistant (nome → objeto JSON já materializado). */
 async function execByName(toolName /* , unused parsed JSON */) {
+  if (toolName === 'trigger_crisis_intervention') {
+    return {
+      ok: true,
+      status:
+        'Sucesso no alerta (OpenAI bridge: sem post automático ao Chatwoot — use ACTIVE_AI_PROVIDER=anthropic neste webhook para disparo supervisores)',
+      alert_dispatched_chatwoot: false,
+      orientacao_para_sua_resposta_publica:
+        'Finalize com mensagem breve acolhendo-o; mencione CVV **188**, gratuito **24 horas**.',
+    };
+  }
   if (toolName === 'check_balance') {
     // Placeholder até o serviço de carteira/ledger ficar disponível nos tools.
     return {

@@ -24,3 +24,6 @@ Thumbs.db
 # Testes / cobertura temporária
 coverage/
 .nyc_output/
+
+# Mini front smoke test local (JWT) — opcional não versionado
+/public/socket-queue-test.html

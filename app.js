@@ -1,4 +1,5 @@
 const path = require('path');
+const http = require('http');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const express = require('express');
@@ -20,7 +21,11 @@ const { runMigrations } = require('./scripts/run-migrations');
 require('./src/models');
 
 const app = express();
+const server = http.createServer(app);
 const port = process.env.PORT || 3000;
+
+const { initSocketGateway } = require('./src/providers/socket/socket.gateway');
+initSocketGateway(server);
 
 if (process.env.TRUST_PROXY === 'true') {
   app.set('trust proxy', Number(process.env.TRUST_PROXY_COUNT) || 1);
@@ -123,12 +128,18 @@ async function start() {
       console.warn('[openai.setup] Aquecimento do assistente ignorado:', e.message)
     );
 
-    app.listen(port, () => {
+    server.listen(port, () => {
       console.log(`API escutando na porta ${port}`);
       const {
         scheduleEmailPendingReviewJob,
       } = require('./src/features/auth/auth.emailPending.job');
+      const {
+        scheduleSpecialistReservationSweepJob,
+      } = require('./src/features/specialists/specialist.jobs');
+      const { attachWorkerIfEnabled } = require('./src/queues/delivery.queue');
       scheduleEmailPendingReviewJob();
+      scheduleSpecialistReservationSweepJob();
+      attachWorkerIfEnabled();
     });
   } catch (err) {
     console.error('Falha ao iniciar a API:', err);

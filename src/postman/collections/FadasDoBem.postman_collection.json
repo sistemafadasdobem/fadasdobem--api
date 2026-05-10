@@ -87,6 +87,92 @@
           "response": []
         },
         {
+          "name": "Public — Especialistas (vitrine)",
+          "description": "Endpoints sem JWT — listagem (`GET /`) e perfil público por UUID (`GET /:id`).",
+          "item": [
+            {
+              "name": "Listagem GET /specialists",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{api_base_url}}/specialists?limit=20&sort=ranking",
+                "description": "`GET /api/v1/specialists` — inclui métricas de vitrine (`experience_years`, `timezone`, URLs de mídia) e remove dados sensíveis (PIX, `user_id`, integrações)."
+              },
+              "response": []
+            },
+            {
+              "name": "Perfil público por id GET /specialists/:id",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{api_base_url}}/specialists/00000000-0000-4000-8000-000000000002",
+                "description": "`GET /api/v1/specialists/:id` — eager load modalidades, oráculos e `agenda_horarios` (`is_active: true`), ordenadas por dia e hora inicial."
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Fase 3 — Painel da Taróloga",
+          "description": "JWT Bearer com papel `TAROLOGA` (`{{jwt_token}}`). Prefixo `/api/v1/specialists`. Hooks de estado usam `individualHooks: true`.",
+          "item": [
+            {
+              "name": "PATCH me/profile",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  { "key": "Authorization", "value": "Bearer {{jwt_token}}", "type": "text" },
+                  { "key": "Content-Type", "value": "application/json", "type": "text" }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"bio\": \"Apresentação actualizada pela taróloga.\",\n  \"experience_years\": 8,\n  \"timezone\": \"America/Sao_Paulo\",\n  \"greeting_audio_url\": \"https://cdn.example.com/audio/boas-vindas.mp3\",\n  \"presentation_video_url\": \"https://cdn.example.com/video/apresentacao.mp4\"\n}",
+                  "options": { "raw": { "language": "json" } }
+                },
+                "url": "{{api_base_url}}/specialists/me/profile",
+                "description": "`PATCH /api/v1/specialists/me/profile` — campos opcionais: `bio`, `greeting_audio_url`, `presentation_video_url`, `experience_years`, `timezone`."
+              },
+              "response": []
+            },
+            {
+              "name": "PATCH me/status",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  { "key": "Authorization", "value": "Bearer {{jwt_token}}", "type": "text" },
+                  { "key": "Content-Type", "value": "application/json", "type": "text" }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"status\": \"ONLINE\"\n}",
+                  "options": { "raw": { "language": "json" } }
+                },
+                "url": "{{api_base_url}}/specialists/me/status",
+                "description": "`PATCH /api/v1/specialists/me/status` — `ONLINE` | `EM_ATENDIMENTO` | `AUSENTE` | `OFFLINE`. Garante entrada em `specialist_status_logs`."
+              },
+              "response": []
+            },
+            {
+              "name": "PUT me/schedule",
+              "request": {
+                "method": "PUT",
+                "header": [
+                  { "key": "Authorization", "value": "Bearer {{jwt_token}}", "type": "text" },
+                  { "key": "Content-Type", "value": "application/json", "type": "text" }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"slots\": [\n    { \"day_of_week\": 1, \"start_time\": \"09:00\", \"end_time\": \"12:30\" },\n    { \"day_of_week\": 1, \"start_time\": \"14:00\", \"end_time\": \"18:00\", \"is_active\": true }\n  ]\n}",
+                  "options": { "raw": { "language": "json" } }
+                },
+                "url": "{{api_base_url}}/specialists/me/schedule",
+                "description": "`PUT /api/v1/specialists/me/schedule` — substitui toda a agenda (transação: destroy + bulkCreate). `day_of_week` 0–6 (Domingo–Sábado)."
+              },
+              "response": []
+            }
+          ]
+        },
+        {
           "name": "Evolution Admin — instances",
           "request": {
             "method": "GET",

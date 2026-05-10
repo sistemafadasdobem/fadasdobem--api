@@ -41,11 +41,12 @@ module.exports = {
 
   /**
    * `express.json()` global deve ter parseado o corpo antes do middleware de assinatura.
-   * Resposta rápida 200 para o MP não re-tentativas agressivas.
+   * O fluxo espera terminar antes do **200**: erros recuperáveis (ex.: mutex Redis / indisponibilidade
+   * transitória) regressam como **503** para o Mercado Pago repetir a notificação.
    */
-  receiveMercadoPagoWebhook(req, res) {
+  receiveMercadoPagoWebhook: catchAsyncRoute(async (req, res) => {
     const sig = req.get('x-signature') || '';
-    console.log('[MP:Webhook] recebido (antes 200)', {
+    console.log('[MP:Webhook] recebido', {
       ip: req.ip || req.socket?.remoteAddress,
       method: req.method,
       path: req.originalUrl,
@@ -69,7 +70,6 @@ module.exports = {
       }
     }
 
-    responderSucesso(res, { aceito: true }, 'Webhook Mercado Pago recebido.', 200);
     const hdrs = {
       'x-request-id': req.get('x-request-id'),
       'x-signature': req.get('x-signature'),
@@ -79,10 +79,8 @@ module.exports = {
       query: req.query || {},
       headers: hdrs,
     };
-    setImmediate(() => {
-      paymentsService.processMercadoPagoWebhookAsync(envelope).catch((err) => {
-        console.error('[MP:Webhook] falha async', err?.stack || err?.message || err);
-      });
-    });
-  },
+
+    await paymentsService.processMercadoPagoWebhookAsync(envelope);
+    return responderSucesso(res, { aceito: true }, 'Webhook Mercado Pago processado.', 200);
+  }),
 };

@@ -6,6 +6,10 @@ const specialistsRoutes = require('../features/specialists/specialists.routes');
 const sessionsRoutes = require('../features/sessions/sessions.routes');
 const paymentsRoutes = require('../features/payments/payments.routes');
 const configRoutes = require('../features/config/config.routes');
+const queuesRoutes = require('../features/queues/queues.routes');
+const adminRoutes = require('../features/admin/admin.routes');
+const payoutsRoutes = require('../features/payouts/payouts.routes');
+const diariesRoutes = require('../features/diaries/diaries.routes');
 const { responderSucesso } = require('../utils/response.util');
 const { API_VERSION_SEMVER } = require('../config/version');
 
@@ -18,6 +22,10 @@ router.use('/v1/evolution-admin', evolutionRoutes);
 router.use('/v1/specialists', specialistsRoutes);
 router.use('/v1/sessions', sessionsRoutes);
 router.use('/v1/payments', paymentsRoutes);
+router.use('/v1/queues', queuesRoutes);
+router.use('/v1/admin', adminRoutes);
+router.use('/v1/payouts', payoutsRoutes);
+router.use('/v1/diaries', diariesRoutes);
 
 router.get('/ping', (_req, res) => {
   return responderSucesso(

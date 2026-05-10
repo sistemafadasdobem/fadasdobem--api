@@ -30,6 +30,7 @@ const {
 } = require('./auth.constants');
 const { isDisposableEmailAddress } = require('../../config/disposableEmails.config');
 const { recordAuthSecurityAudit } = require('./auth.audit.util');
+const { generateIdentityChallenge } = require('./identity.util');
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -47,11 +48,18 @@ function sanitizeUserRecord(userInstance) {
   return plain;
 }
 
-async function issueTokenPairForUser(userRecord) {
+async function issueTokenPairForUser(userRecord, opts = {}) {
   assertJwtSecretsLoaded();
   const subject = userRecord.id;
+  const accessExtra =
+    opts &&
+    opts.accessTokenClaims &&
+    typeof opts.accessTokenClaims === 'object' &&
+    !Array.isArray(opts.accessTokenClaims)
+      ? opts.accessTokenClaims
+      : {};
   const accessToken = jwt.sign(
-    { sub: subject, token_use: 'access' },
+    { sub: subject, token_use: 'access', ...accessExtra },
     process.env.JWT_SECRET,
     jwtSignOptionsAccess()
   );
@@ -629,7 +637,15 @@ async function patchMeProfile(userId, body) {
  * Se existir `Session` com o mesmo `chatwoot_conversation_id` (cenários futuros), o `client_id` é actualizado.
  *
  * @param {string} leadId
- * @param {{ email: string, password: string, accepted_terms_version: string, nome?: string|null }} userData
+ * @param {{
+ *   email: string,
+ *   password: string,
+ *   accepted_terms_version: string,
+ *   nome?: string|null,
+ *   nome_completo?: string|null,
+ *   data_nascimento?: string|null,
+ *   phone?: string|null,
+ * }} userData
  */
 async function convertLeadToClient(leadId, userData, reqMeta = {}) {
   assertEmailFormat(userData.email);
@@ -701,10 +717,27 @@ async function convertLeadToClient(leadId, userData, reqMeta = {}) {
         { transaction: t }
       );
 
+      const nomeFullCandidate = (() => {
+        if (userData.nome_completo != null && `${userData.nome_completo}`.trim()) {
+          return `${userData.nome_completo}`.trim().slice(0, AUTH_CONFIG.profileNomeMaxLength);
+        }
+        if (userData.nome != null && `${userData.nome}`.trim()) {
+          return `${userData.nome}`.trim().slice(0, AUTH_CONFIG.profileNomeMaxLength);
+        }
+        return '';
+      })();
+
+      let dataNasc = null;
+      if (userData.data_nascimento != null && `${userData.data_nascimento}`.trim() !== '') {
+        dataNasc = `${userData.data_nascimento}`.trim();
+      }
+
       const clientProfile = await Client.create(
         {
           user_id: user.id,
-          nome: userData.nome != null ? `${userData.nome}`.trim().slice(0, AUTH_CONFIG.profileNomeMaxLength) : null,
+          nome_completo: nomeFullCandidate || null,
+          nome: nomeFullCandidate || null,
+          data_nascimento: dataNasc,
           internal_notes: pixNote,
         },
         { transaction: t }
@@ -730,6 +763,10 @@ async function convertLeadToClient(leadId, userData, reqMeta = {}) {
           }
         );
       }
+
+      // eslint-disable-next-line global-require, import/no-dynamic-require
+      const paymentsService = require('../payments/payments.service');
+      await paymentsService.reconcileLeadFsmPaymentsAfterConversion(lead.id, clientProfile.id, t);
     });
   } catch (err) {
     if (err instanceof UniqueConstraintError || err.name === 'SequelizeUniqueConstraintError') {
@@ -777,4 +814,5 @@ module.exports = {
   resendVerificationEmail,
   syncEmailPendingReviewFlags,
   convertLeadToClient,
+  generateIdentityChallenge,
 };

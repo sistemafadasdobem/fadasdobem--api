@@ -7,9 +7,17 @@ const {
   ClientCreditLot,
   TransactionLedger,
   LedgerAccount,
+  Lead,
+  Specialist,
+  PendingDelivery,
 } = require('../../models');
 const { sequelize } = require('../../config/database');
 const AppError = require('../../utils/AppError');
+const {
+  acquireSpecialistPaymentMutex,
+  releaseSpecialistPaymentMutex,
+} = require('../../providers/redis/specialist.payment.mutex');
+const { enqueuePendingDeliveryJob } = require('../../queues/delivery.queue');
 const mpClient = require('../../providers/mercadopago/mercadopago.client');
 const { loadPackageCatalog } = require('./payments.constants');
 
@@ -78,6 +86,24 @@ function roundMoney(n) {
   const x = Number(n);
   if (!Number.isFinite(x) || x <= 0) return null;
   return Math.round(x * 10000) / 10000;
+}
+
+/** UUID lowercase canónico ou `null` se inválido. */
+function normalizeUuidCandidate(raw) {
+  const s = `${raw || ''}`.trim().toLowerCase();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(s) ? s : null;
+}
+
+async function enqueuePendingDeliveriesAfterCommit(ids = []) {
+  const seen = [...new Set((ids || []).map((x) => `${x || ''}`.trim()).filter(Boolean))];
+  for (const id of seen) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      await enqueuePendingDeliveryJob(id);
+    } catch (e) {
+      console.error('[payments:outbox_enqueue] falha BullMQ:', id, e?.message || e);
+    }
+  }
 }
 
 function validateCreditType(ct) {
@@ -284,6 +310,11 @@ async function reverseWalletTopup(order, mp, kind, t) {
   const amountGoal = Number(order.mp_net_received_amount ?? order.amount ?? 0);
   if (!Number.isFinite(amountGoal) || amountGoal <= 0) return;
 
+  if (!order.client_id) {
+    console.warn('[Payments] reverseWalletTopup omitido — sem client_id no pedido (FSM Lead).');
+    return;
+  }
+
   const wallet = await ensureClientWallet(order.client_id, t);
   const reserve =
     kind === 'CHARGEBACK' ? await ensureChargebackReserve(t) : await ensurePlatformSuspense(t);
@@ -325,7 +356,14 @@ async function reverseWalletTopup(order, mp, kind, t) {
   await wallet.update({ cached_balance: roundMoney(bal - reversal) }, { transaction: t });
 }
 
-async function handleApproved(order, mp, t) {
+/**
+ * Liquida carteira cliente + opcionalmente trava Postgres da especialista e outbox PendingDelivery (T8).
+ * @param {{ id:string }} order
+ * @param {Record<string, unknown>} mp snapshot Mercado Pago ou sintético
+ * @param {import('sequelize').Transaction} t
+ * @param {string[]} [deliveriesToEnqueueIds] IDs `pending_deliveries` a enfileirar **apenas** depois do commit
+ */
+async function handleApproved(order, mp, t, deliveriesToEnqueueIds = []) {
   await applyMpSnapshotToOrder(order, mp, t);
   await order.reload({ transaction: t, lock: t.LOCK.UPDATE });
 
@@ -334,6 +372,26 @@ async function handleApproved(order, mp, t) {
   const creditBrl = pickCreditBrlFromMp(order, mp);
   if (!creditBrl) {
     throw new AppError('Não foi possível determinar o valor líquido/bruto do pagamento.', 500, null, false);
+  }
+
+  /** PIX Lead FSM WhatsApp — sem `clients` até `convertLeadToClient`. Carteira será liquidada após conversão. */
+  const leadFsmPending = Boolean(order.lead_id) && !order.client_id;
+  if (leadFsmPending) {
+    const nextCtx = { ...(order.checkout_context || {}), lead_fsm_v1: true, lead_fsm_credit_brl_reserved: creditBrl };
+    await order.update(
+      {
+        status: 'PAID',
+        paid_at: new Date(mp.date_approved || Date.now()),
+        payment_method: mapPaymentMethod(mp),
+        checkout_context: nextCtx,
+      },
+      { transaction: t }
+    );
+    return;
+  }
+
+  if (!order.client_id) {
+    throw new AppError('Pagamento aprovado sem titular carteira válido.', 500, null, false);
   }
 
   const idem = `mp-pay-approved-${mp.id}`;
@@ -353,15 +411,16 @@ async function handleApproved(order, mp, t) {
   const suspense = await ensurePlatformSuspense(t);
   const wallet = await ensureClientWallet(order.client_id, t);
 
+  /** a) Razão económica oficial de crédito após webhook/captura autorizada (`PAYMENT_ACCREDITED`). */
   await TransactionLedger.create(
     {
       debit_account_id: suspense.id,
       credit_account_id: wallet.id,
       amount: creditBrl,
-      reference_type: 'PAYMENT_TOPUP',
+      reference_type: 'PAYMENT_ACCREDITED',
       reference_id: order.id,
       idempotency_key: idem,
-      description: `Recarga aprovada (MP ${mp.id})`,
+      description: `Crédito aprovado via gateway (MP ${mp.id})`,
       metadata: {
         mp_payment_id: String(mp.id),
         mp_transaction_amount: order.mp_transaction_amount,
@@ -373,7 +432,83 @@ async function handleApproved(order, mp, t) {
     { transaction: t }
   );
 
-  const ctx = order.checkout_context || {};
+  const checkoutCtxAll = order.checkout_context || {};
+  const specIdCandidate = normalizeUuidCandidate(checkoutCtxAll.specialist_id);
+
+  if (specIdCandidate) {
+    const specRow = await Specialist.findByPk(specIdCandidate, { transaction: t, lock: t.LOCK.UPDATE });
+    if (!specRow) {
+      throw new AppError('specialist_id indicada no checkout não existe.', 400, null, false);
+    }
+
+    const nowMs = Date.now();
+    const ru = specRow.reserved_until ? new Date(specRow.reserved_until).getTime() : NaN;
+    const untilOk = Number.isFinite(ru) && ru > nowMs;
+    const occupiedByOther =
+      untilOk &&
+      `${specRow.reserved_by_client_id || ''}` &&
+      `${specRow.reserved_by_client_id}` !== `${order.client_id}`;
+
+    if (occupiedByOther) {
+      throw new AppError(
+        'Esta especialista está reservada por outra cliente neste momento — webhook deve ser repetido pela fila Mercado Pago.',
+        409,
+        { code: 'SPECIALIST_ALREADY_RESERVED_DB' },
+        false
+      );
+    }
+
+    const reservedUntilJs = new Date(nowMs + 5 * 60 * 1000);
+    await specRow.update(
+      {
+        reserved_by_client_id: order.client_id,
+        reserved_until: reservedUntilJs,
+      },
+      { transaction: t }
+    );
+
+    const acctRaw = `${checkoutCtxAll.chatwoot_account_id || process.env.CHATWOOT_ACCOUNT_ID || ''}`.trim();
+    const convRaw = `${checkoutCtxAll.chatwoot_conversation_id || ''}`.trim();
+
+    /** c) Transactional Outbox — entrega assimétrica (BullMQ) após commit. */
+    const firstName =
+      `${checkoutCtxAll.extracted_first_name || checkoutCtxAll.client_first_name || 'Cliente'}`.trim().slice(0, 48) ||
+      'Cliente';
+    const t8Variant = `${checkoutCtxAll.t8_variant || checkoutCtxAll.pending_delivery_variant || 'platform'}`
+      .trim()
+      .toLowerCase();
+
+    if (acctRaw && convRaw) {
+      const existingPd = await PendingDelivery.findOne({
+        where: { order_id: order.id, status: { [Op.in]: ['PENDING', 'SENT'] } },
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+
+      if (!existingPd) {
+        const rowPd = await PendingDelivery.create(
+          {
+            order_id: order.id,
+            status: 'PENDING',
+            attempts: 0,
+            payload: {
+              kind: 'T8_CHATWOOT',
+              variant: ['platform', 'phone'].includes(t8Variant) ? t8Variant : 'platform',
+              chatwootAccountId: acctRaw,
+              conversationId: convRaw,
+              clientFirstName: firstName,
+              specialistId: specIdCandidate,
+            },
+          },
+          { transaction: t }
+        );
+
+        deliveriesToEnqueueIds.push(rowPd.id);
+      }
+    }
+  }
+
+  const ctx = checkoutCtxAll;
   const creditType = ctx.credit_type || 'AVULSO';
 
   const validTypes = ClientCreditLot.CREDIT_TYPES || ['AVULSO', 'PACOTE_SESSAO_UNICA'];
@@ -403,6 +538,269 @@ async function handleApproved(order, mp, t) {
     },
     { transaction: t }
   );
+}
+
+/**
+ * Captura síncrona MP (instantânea ao criar pagamento): mutex Redis + Postgres + enqueue BullMQ
+ * (**sem** anexar `raw_webhook_payload` — apenas notificação assíncrona faz o vault merge).
+ *
+ * @param {import('sequelize').Model} orderModel `PaymentOrder` carregado (pré-mp_response)
+ */
+async function finalizeApprovedMercadoSynchronously(orderModel, mpPayment) {
+  const orderId = orderModel?.id;
+  if (!orderId) throw new AppError('PaymentOrder ausente.', 500, null, false);
+
+  const enqueueIdsCollector = [];
+
+  const baseRow = await PaymentOrder.findByPk(orderId, { paranoid: true });
+  if (!baseRow) {
+    throw new AppError('PaymentOrder inexistente para liquidação MP síncrona.', 404, null, true);
+  }
+  const ctxPre = baseRow.checkout_context || {};
+  const specPre = normalizeUuidCandidate(ctxPre.specialist_id);
+
+  let mutexHeldFor = null;
+
+  try {
+    if (specPre && baseRow.client_id) {
+      const lk = await acquireSpecialistPaymentMutex(specPre, orderId, 30);
+      if (!lk.ok && lk.reason === 'lock_held') {
+        throw new AppError(
+          'Liquidação momentaneamente ocupada (mutex especialista) — nova tentativa em poucos segundos.',
+          503,
+          { code: 'SPECIALIST_MUTEX_BUSY', specialist_id: specPre },
+          false
+        );
+      }
+      mutexHeldFor = specPre;
+    }
+
+    await sequelize.transaction(async (t) => {
+      const locked = await PaymentOrder.findByPk(orderId, { transaction: t, lock: t.LOCK.UPDATE });
+      await handleApproved(locked, mpPayment, t, enqueueIdsCollector);
+    });
+
+    await enqueuePendingDeliveriesAfterCommit(enqueueIdsCollector);
+  } finally {
+    if (mutexHeldFor) await releaseSpecialistPaymentMutex(mutexHeldFor, orderId);
+  }
+}
+
+function formatFsmBrlLabel(amountDec) {
+  const n = Number(amountDec);
+  if (!Number.isFinite(n)) return '';
+  try {
+    return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(n);
+  } catch {
+    const s = n.toFixed(2).replace('.', ',');
+    return `R$${s}`;
+  }
+}
+
+async function reconcileLeadFsmPaymentsAfterConversion(leadId, clientId, t) {
+  const orders = await PaymentOrder.findAll({
+    where: { lead_id: leadId, status: 'PAID', client_id: { [Op.is]: null } },
+    transaction: t,
+    lock: t.LOCK.UPDATE,
+  });
+  const mpLikeFromOrder = (ord) => ({
+    id: ord.mp_payment_id,
+    transaction_amount: ord.mp_transaction_amount != null ? Number(ord.mp_transaction_amount) : Number(ord.amount),
+    transaction_details: { net_received_amount: Number(ord.mp_net_received_amount ?? ord.amount) },
+    payment_type_id: 'bank_transfer',
+    payment_method_id: 'pix',
+    date_approved: ord.paid_at || undefined,
+    status_detail: ord.mp_status_detail,
+    status: 'approved',
+  });
+
+  const suspense = await ensurePlatformSuspense(t);
+  const wallet = await ensureClientWallet(clientId, t);
+
+  for (const ord of orders) {
+    await ord.update({ client_id: clientId }, { transaction: t });
+    await ord.reload({ transaction: t });
+
+    let creditBrl = roundMoney(Number((ord.checkout_context || {}).lead_fsm_credit_brl_reserved));
+    const mpSynth = mpLikeFromOrder(ord);
+    if (!creditBrl) creditBrl = pickCreditBrlFromMp(ord, mpSynth);
+    if (!creditBrl) continue;
+
+    const idem = `mp-pay-fsmconverted-${String(ord.mp_payment_id || ord.id)}`;
+    const dup = await TransactionLedger.findOne({ where: { idempotency_key: idem }, transaction: t });
+    if (dup) continue;
+
+    await TransactionLedger.create(
+      {
+        debit_account_id: suspense.id,
+        credit_account_id: wallet.id,
+        amount: creditBrl,
+        reference_type: 'PAYMENT_TOPUP',
+        reference_id: ord.id,
+        idempotency_key: idem,
+        description: `Recarga PIX Lead WhatsApp reconciliada (pedido ${ord.id})`,
+        metadata: {
+          mp_payment_id: String(ord.mp_payment_id || ''),
+          lead_fsm: true,
+          lead_id: String(leadId),
+        },
+        occurred_at: new Date(ord.paid_at || Date.now()),
+      },
+      { transaction: t }
+    );
+
+    const ctx = ord.checkout_context || {};
+    const creditType = ctx.credit_type || 'PACOTE_SESSAO_UNICA';
+    const validTypes = ClientCreditLot.CREDIT_TYPES || ['AVULSO', 'PACOTE_SESSAO_UNICA'];
+    const lotType = validTypes.includes(creditType) ? creditType : 'AVULSO';
+
+    await ClientCreditLot.create(
+      {
+        client_id: clientId,
+        payment_order_id: ord.id,
+        credit_type: lotType,
+        initial_amount: creditBrl,
+        remaining_amount: creditBrl,
+        expires_at: null,
+        notes: ctx.package_id ? `Pacote: ${ctx.package_id}` : ctx.label || 'Lead FSM PIX',
+      },
+      { transaction: t }
+    );
+
+    await wallet.reload({ transaction: t, lock: t.LOCK.UPDATE });
+    const curBal = Number(wallet.cached_balance ?? 0);
+    await wallet.update({ cached_balance: roundMoney(curBal + creditBrl) }, { transaction: t });
+  }
+}
+
+async function createPixCheckoutForLeadFsm({
+  leadId,
+  amountBrlDecimal,
+  label,
+  packageIdFsm,
+  chatwootAccountId,
+  conversationId,
+}) {
+  const leadRow = await Lead.findByPk(leadId, { paranoid: true });
+  if (!leadRow) throw new AppError('Lead não encontrado para gerar PIX.', 404, null, true);
+
+  const specialistFromLead = normalizeUuidCandidate(leadRow.interested_specialist_id);
+
+  const domain = `${process.env.LEAD_FSM_MP_GUEST_EMAIL_DOMAIN || 'clients.fadasdobem.invalid'}`.trim().replace(/^@/, '');
+  const slug = `${leadId}`.replace(/-/g, '').slice(0, 12).toLowerCase();
+  const guestEmail = `${process.env.LEAD_FSM_MP_GUEST_MAILBOX || 'lead.pay'}+fsm.${slug}@${domain}`.toLowerCase();
+
+  const amt = roundMoney(amountBrlDecimal);
+  if (!amt) throw new AppError('Valor PIX inválido.', 400, null, true);
+
+  const externalReference = randomUUID();
+  const acctId = `${chatwootAccountId || process.env.CHATWOOT_ACCOUNT_ID || ''}`.trim();
+
+  const order = await PaymentOrder.create({
+    client_id: null,
+    lead_id: leadId,
+    user_id: null,
+    external_reference: externalReference,
+    amount: amt,
+    currency: 'BRL',
+    status: 'PENDING',
+    payment_method: 'PIX',
+    checkout_context: {
+      lead_fsm_v1: true,
+      credit_type: 'PACOTE_SESSAO_UNICA',
+      label: `${label || 'Consulta primeira vitrine WhatsApp'}`.slice(0, 256),
+      package_id_fsm: packageIdFsm || null,
+      chatwoot_account_id: acctId,
+      chatwoot_conversation_id: `${conversationId || ''}`,
+      amount_display_fsm: formatFsmBrlLabel(amt),
+      ...(specialistFromLead ? { specialist_id: specialistFromLead } : {}),
+    },
+  });
+
+  const mpPayment = await mpClient.createPixPayment({
+    transaction_amount: amt,
+    description: `[Fadas do Bem WhatsApp Lead] ${label || 'Pacote'}`.slice(0, 256),
+    external_reference: externalReference,
+    payer_email: guestEmail,
+    payer_first_name: 'Cliente',
+    payer_last_name: 'WhatsApp Lead',
+    notification_url: resolveNotificationUrl(),
+  });
+
+  const pixExpRaw = mpPayment.date_of_expiration;
+  const pixExp = pixExpRaw ? new Date(pixExpRaw) : null;
+
+  await order.update({
+    mp_payment_id: String(mpPayment.id),
+    pix_qr_code: mpPayment.point_of_interaction?.transaction_data?.qr_code || null,
+    pix_qr_code_base64: mpPayment.point_of_interaction?.transaction_data?.qr_code_base64 || null,
+    mp_status: mpPayment.status || null,
+    mp_status_detail: mpPayment.status_detail || null,
+    pix_expires_at: pixExp && Number.isFinite(pixExp.getTime()) ? pixExp : null,
+    mp_transaction_amount:
+      mpPayment.transaction_amount != null ? Number(mpPayment.transaction_amount) : amt,
+    mp_net_received_amount:
+      mpPayment.transaction_details?.net_received_amount != null
+        ? Number(mpPayment.transaction_details.net_received_amount)
+        : null,
+  });
+
+  if (mpPayment.status === 'approved') {
+    const postEnvelope = [];
+    await sequelize.transaction(async (t) => {
+      const locked = await PaymentOrder.findByPk(order.id, { transaction: t, lock: t.LOCK.UPDATE });
+      await handleApproved(locked, mpPayment, t, postEnvelope);
+    });
+    await enqueuePendingDeliveriesAfterCommit(postEnvelope);
+
+    const warmed = await PaymentOrder.findByPk(order.id, { paranoid: true });
+    await maybeNotifyLeadFsmAfterMpApproved(warmed, `${mpPayment.status || ''}`);
+  }
+
+  const fresh = await PaymentOrder.findByPk(order.id, { paranoid: true });
+
+  return {
+    payment_order_id: fresh.id,
+    external_reference: externalReference,
+    mp_payment_id: String(mpPayment.id),
+    pix: {
+      qr_code:
+        mpPayment.point_of_interaction?.transaction_data?.qr_code || fresh.pix_qr_code || null,
+      qr_code_base64:
+        mpPayment.point_of_interaction?.transaction_data?.qr_code_base64 ||
+        fresh.pix_qr_code_base64 ||
+        null,
+      expires_at: fresh.pix_expires_at || mpPayment.date_of_expiration || null,
+    },
+  };
+}
+
+async function maybeNotifyLeadFsmAfterMpApproved(orderRow /* Model */, mpStatusNormalized) {
+  if (`${mpStatusNormalized || ''}`.toLowerCase().trim() !== 'approved') return;
+  try {
+    const pid = `${orderRow?.id || ''}`.trim();
+    if (!pid) return;
+    const row = await PaymentOrder.findByPk(pid, { paranoid: true });
+    if (!row) return;
+
+    const ctx = row.checkout_context || {};
+    const accountRaw = `${ctx.chatwoot_account_id || process.env.CHATWOOT_ACCOUNT_ID || ''}`.trim();
+    const convRaw = `${ctx.chatwoot_conversation_id || ''}`.trim();
+    const isFsmLead = Boolean(ctx.lead_fsm_v1) && !!row.lead_id;
+    if (!(isFsmLead && accountRaw && convRaw)) return;
+
+    const fmt =
+      `${ctx.amount_display_fsm || ''}`.trim() ||
+      formatFsmBrlLabel(row.amount ?? row.mp_transaction_amount) ||
+      '';
+
+    /** Lazy require para evitar ciclo com `chatwoot.workflow.js`. */
+    // eslint-disable-next-line global-require, import/no-dynamic-require
+    const wf = require('../chatwoot/chatwoot.workflow');
+    await wf.advancePaymentCaptured(accountRaw, convRaw, { amountFormatted: fmt || undefined });
+  } catch (e) {
+    console.warn('[payments:lead_fsm_mp_hook]', e.message || e);
+  }
 }
 
 async function handleRejected(order, mp, t) {
@@ -480,6 +878,10 @@ async function createPixCheckout(user, body = {}) {
     throw new AppError('E-mail do utilizador em falta — necessário para o Mercado Pago.', 400, null, true);
   }
 
+  const specOpt = normalizeUuidCandidate(body.specialist_id);
+  const cwAcctOpt = `${body.chatwoot_account_id || ''}`.trim();
+  const cwConvOpt = `${body.chatwoot_conversation_id || ''}`.trim();
+
   const order = await PaymentOrder.create({
     client_id: client.id,
     user_id: user.id,
@@ -492,6 +894,9 @@ async function createPixCheckout(user, body = {}) {
       package_id: purchase.package_id,
       credit_type: purchase.credit_type,
       label: purchase.label,
+      ...(specOpt ? { specialist_id: specOpt } : {}),
+      ...(cwAcctOpt ? { chatwoot_account_id: cwAcctOpt } : {}),
+      ...(cwConvOpt ? { chatwoot_conversation_id: cwConvOpt } : {}),
     },
   });
 
@@ -519,10 +924,7 @@ async function createPixCheckout(user, body = {}) {
     });
 
     if (mpPayment.status === 'approved') {
-      await sequelize.transaction(async (t) => {
-        const locked = await PaymentOrder.findByPk(order.id, { transaction: t, lock: t.LOCK.UPDATE });
-        await handleApproved(locked, mpPayment, t);
-      });
+      await finalizeApprovedMercadoSynchronously(order, mpPayment);
     }
 
     return {
@@ -578,6 +980,10 @@ async function createCardCheckout(user, body = {}) {
   }
   const installments = parseInt(`${body.installments ?? 1}`, 10) || 1;
 
+  const specCk = normalizeUuidCandidate(body.specialist_id);
+  const cwAcctCk = `${body.chatwoot_account_id || ''}`.trim();
+  const cwConvCk = `${body.chatwoot_conversation_id || ''}`.trim();
+
   const order = await PaymentOrder.create({
     client_id: client.id,
     user_id: user.id,
@@ -591,6 +997,9 @@ async function createCardCheckout(user, body = {}) {
       credit_type: purchase.credit_type,
       label: purchase.label,
       installments,
+      ...(specCk ? { specialist_id: specCk } : {}),
+      ...(cwAcctCk ? { chatwoot_account_id: cwAcctCk } : {}),
+      ...(cwConvCk ? { chatwoot_conversation_id: cwConvCk } : {}),
     },
   });
 
@@ -624,20 +1033,22 @@ async function createCardCheckout(user, body = {}) {
       installments,
     });
 
-    await sequelize.transaction(async (t) => {
-      const locked = await PaymentOrder.findByPk(order.id, { transaction: t, lock: t.LOCK.UPDATE });
-      if (mpPayment.status === 'approved') {
-        await handleApproved(locked, mpPayment, t);
-      } else if (
-        mpPayment.status === 'rejected' ||
-        mpPayment.status === 'cancelled' ||
-        mpPayment.status === 'canceled'
-      ) {
-        await handleRejected(locked, mpPayment, t);
-      } else {
-        await handleInProcess(locked, mpPayment, t);
-      }
-    });
+    if (mpPayment.status === 'approved') {
+      await finalizeApprovedMercadoSynchronously(order, mpPayment);
+    } else {
+      await sequelize.transaction(async (t) => {
+        const locked = await PaymentOrder.findByPk(order.id, { transaction: t, lock: t.LOCK.UPDATE });
+        if (
+          mpPayment.status === 'rejected' ||
+          mpPayment.status === 'cancelled' ||
+          mpPayment.status === 'canceled'
+        ) {
+          await handleRejected(locked, mpPayment, t);
+        } else {
+          await handleInProcess(locked, mpPayment, t);
+        }
+      });
+    }
 
     const fresh = await PaymentOrder.findByPk(order.id, { paranoid: true });
     return {
@@ -660,7 +1071,7 @@ async function createCardCheckout(user, body = {}) {
 }
 
 /**
- * Processamento assíncrono — chamado depois do HTTP 200.
+ * Pipeline HTTP síncrono (controlador aguarda) — erros recuperáveis (503) incentivam retries do Mercado Pago.
  *
  * @param {{
  *   body: object;
@@ -671,7 +1082,7 @@ async function createCardCheckout(user, body = {}) {
 async function processMercadoPagoWebhookAsync(envelope = {}) {
   const body = envelope.body && typeof envelope.body === 'object' ? envelope.body : {};
 
-  console.log('[MP:Webhook] --- início processamento async ---');
+  console.log('[MP:Webhook] --- início pipeline notificação ---');
 
   if (isMpWebhookVerbose()) {
     console.log('[MP:Webhook] envelope (payload bruto + query)', {
@@ -709,6 +1120,16 @@ async function processMercadoPagoWebhookAsync(envelope = {}) {
   try {
     mpPayment = await mpClient.getPaymentById(paymentId);
   } catch (e) {
+    const is404 =
+      (e instanceof AppError && e.statusCode === 404) ||
+      `${e?.message || ''}`.includes('não encontrado');
+    if (is404) {
+      console.warn(
+        '[MP:Webhook] pagamento inexistente na API MP — normal no "Enviar teste" do painel (ID fictício, ex.: 123456). Ignorado.',
+        { payment_id: paymentId }
+      );
+      return;
+    }
     console.error('[MP:Webhook] getPaymentById falhou:', e?.message || e);
     throw e;
   }
@@ -778,42 +1199,79 @@ async function processMercadoPagoWebhookAsync(envelope = {}) {
     status_atual_bd: order.status,
   });
 
-  await sequelize.transaction(async (t) => {
-    const locked = await PaymentOrder.findByPk(order.id, { transaction: t, lock: t.LOCK.UPDATE });
-    const mergedVault = appendWebhookVault(locked.raw_webhook_payload, vaultEntry);
-    await locked.update({ raw_webhook_payload: mergedVault }, { transaction: t });
+  const approvalsOutboxCollector = [];
 
-    switch (mpPayment.status) {
-      case 'approved':
-        await handleApproved(locked, mpPayment, t);
-        break;
+  if (mpPayment.status === 'approved') {
+    const ctxPre = order.checkout_context || {};
+    const specPre = normalizeUuidCandidate(ctxPre.specialist_id);
 
-      case 'rejected':
-      case 'cancelled':
-      case 'canceled':
-        await handleRejected(locked, mpPayment, t);
-        break;
-
-      case 'refunded':
-      case 'partially_refunded':
-        await handleRefund(locked, mpPayment, t);
-        break;
-
-      case 'charged_back':
-        await handleChargeback(locked, mpPayment, t);
-        break;
-
-      case 'pending':
-      case 'in_process':
-      case 'in_mediation':
-        await handleInProcess(locked, mpPayment, t);
-        break;
-
-      default:
-        await applyMpSnapshotToOrder(locked, mpPayment, t);
-        console.log('[MP:Webhook] status não mapeado em switch', mpPayment.status);
+    /** Lock Redis antes do Postgres só quando há reserva económica (cliente × especialista MP). */
+    let mutexHeldFor = null;
+    if (specPre && order.client_id) {
+      const lk = await acquireSpecialistPaymentMutex(specPre, order.id, 30);
+      if (!lk.ok && lk.reason === 'lock_held') {
+        throw new AppError(
+          'Webhook MP: recurso já em liquidação (mutex especialista) — Mercado Pago deve repetir dentro de poucos segundos.',
+          503,
+          { code: 'SPECIALIST_MUTEX_BUSY', specialist_id: specPre },
+          false
+        );
+      }
+      mutexHeldFor = specPre;
     }
-  });
+
+    try {
+      await sequelize.transaction(async (t) => {
+        const locked = await PaymentOrder.findByPk(order.id, { transaction: t, lock: t.LOCK.UPDATE });
+        const mergedVault = appendWebhookVault(locked.raw_webhook_payload, vaultEntry);
+        await locked.update({ raw_webhook_payload: mergedVault }, { transaction: t });
+        await handleApproved(locked, mpPayment, t, approvalsOutboxCollector);
+      });
+    } finally {
+      if (mutexHeldFor) {
+        // eslint-disable-next-line no-await-in-loop
+        await releaseSpecialistPaymentMutex(mutexHeldFor, order.id);
+      }
+    }
+
+    await enqueuePendingDeliveriesAfterCommit(approvalsOutboxCollector);
+  } else {
+    await sequelize.transaction(async (t) => {
+      const locked = await PaymentOrder.findByPk(order.id, { transaction: t, lock: t.LOCK.UPDATE });
+      const mergedVault = appendWebhookVault(locked.raw_webhook_payload, vaultEntry);
+      await locked.update({ raw_webhook_payload: mergedVault }, { transaction: t });
+
+      switch (mpPayment.status) {
+        case 'rejected':
+        case 'cancelled':
+        case 'canceled':
+          await handleRejected(locked, mpPayment, t);
+          break;
+
+        case 'refunded':
+        case 'partially_refunded':
+          await handleRefund(locked, mpPayment, t);
+          break;
+
+        case 'charged_back':
+          await handleChargeback(locked, mpPayment, t);
+          break;
+
+        case 'pending':
+        case 'in_process':
+        case 'in_mediation':
+          await handleInProcess(locked, mpPayment, t);
+          break;
+
+        default:
+          await applyMpSnapshotToOrder(locked, mpPayment, t);
+          console.log('[MP:Webhook] status não mapeado em switch', mpPayment.status);
+      }
+    });
+  }
+
+  const refreshed = await PaymentOrder.findByPk(order.id, { paranoid: true });
+  await maybeNotifyLeadFsmAfterMpApproved(refreshed, `${mpPayment.status || ''}`);
 
   console.log('[MP:Webhook] --- fim processamento ---', {
     payment_order_id: order.id,
@@ -822,9 +1280,97 @@ async function processMercadoPagoWebhookAsync(envelope = {}) {
   });
 }
 
+/**
+ * Aprovação manual (Chatwoot / operação interna): cria PaymentOrder já liquidada,
+ * transação ledger suspense → carteira cliente e um ClientCreditLot.
+ * Não usa Mercado Pago.
+ *
+ * @param {import('sequelize').Model & {
+ *   client_profile?: { id?: string } | null;
+ * }} user
+ * @param {Record<string, unknown>} body mesmo contrato que `resolvePurchaseInput`: `amount` e/ou `package_id`.
+ */
+async function approveManualAttendancePayment(user, body = {}) {
+  const client = user.client_profile;
+  if (!client || !client.id) {
+    throw new AppError('Perfil cliente em falta — não é possível lançar pagamento.', 403, null, true);
+  }
+
+  const purchase = resolvePurchaseInput(body);
+  const externalReference = randomUUID();
+
+  /** @type {string[]} */
+  const postEnvelope = [];
+  let createdPaymentOrderId = null;
+
+  const manualSpec =
+    normalizeUuidCandidate(body.specialist_id) || normalizeUuidCandidate(body.manual_specialist_id);
+  const manualCwAcct = `${body.chatwoot_account_id || ''}`.trim();
+  const manualCwConv = `${body.chatwoot_conversation_id || ''}`.trim();
+
+  await sequelize.transaction(async (t) => {
+    const order = await PaymentOrder.create(
+      {
+        client_id: client.id,
+        user_id: user.id,
+        external_reference: externalReference,
+        amount: purchase.amount_brl,
+        currency: 'BRL',
+        status: 'PENDING',
+        payment_method: 'UNKNOWN',
+        checkout_context: {
+          package_id: purchase.package_id,
+          credit_type: purchase.credit_type,
+          label: purchase.label,
+          manual_attendance: true,
+          ...(manualSpec ? { specialist_id: manualSpec } : {}),
+          ...(manualCwAcct ? { chatwoot_account_id: manualCwAcct } : {}),
+          ...(manualCwConv ? { chatwoot_conversation_id: manualCwConv } : {}),
+        },
+      },
+      { transaction: t }
+    );
+
+    createdPaymentOrderId = order.id;
+
+    const syntheticMpId = `manual-${order.id}`;
+    const mpLike = {
+      id: syntheticMpId,
+      transaction_amount: purchase.amount_brl,
+      transaction_details: { net_received_amount: purchase.amount_brl },
+      status: 'approved',
+      payment_type_id: 'manual_attendance',
+      payment_method_id: 'manual_chatwoot',
+      date_approved: new Date(),
+    };
+
+    const locked = await PaymentOrder.findByPk(order.id, {
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+    await handleApproved(locked, mpLike, t, postEnvelope);
+  });
+
+  await enqueuePendingDeliveriesAfterCommit(postEnvelope);
+
+  const locked = await PaymentOrder.findByPk(createdPaymentOrderId, { paranoid: true });
+
+  return {
+    payment_order_id: locked?.id ?? createdPaymentOrderId,
+    external_reference: locked?.external_reference ?? externalReference,
+    status: locked?.status,
+    amount_brl: purchase.amount_brl,
+    credit_type: purchase.credit_type,
+    package_id: purchase.package_id,
+  };
+}
+
 module.exports = {
   createPixCheckout,
   createCardCheckout,
   processMercadoPagoWebhookAsync,
   resolvePurchaseInput,
+  approveManualAttendancePayment,
+  createPixCheckoutForLeadFsm,
+  reconcileLeadFsmPaymentsAfterConversion,
 };
