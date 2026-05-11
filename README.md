@@ -30,15 +30,31 @@ O Core Engine está desenhado para correr atrás do **Easypanel** ou qualquer ho
 
 | Pilar | Papel técnico |
 |--------|----------------|
-| **Redis** | Mutex efémero **`SET specialist_mutex:{id} … NX EX 30`** na liquidação pós‑pagamento: **concorrência zero** quando duas tentativas de reserva/aviso chegam ao mesmo tempo; TTL curto garante recuperação mesmo em falhas. |
-| **BullMQ** | Fila **`delivery-queue`** (outbound assíncrono pós‑transação Postgres). Após **`commit`** seguro nos webhooks PIX/cartão, jobs com **retry e backoff exponencial** consomem o “cofre de entregas” (`pending_deliveries`). Falhas terminais levantam nota privada no Chatwoot. |
+| **Redis** | Mutex efémero **`SET specialist_mutex:{id} … NX EX`** na liquidação pós‑pagamento **e no `POST /api/v1/queues`**: corrida distribuída evitada tanto em reservas económicas como na entrada/atribuição de fila · TTL curto garante recuperação após falhas. |
+| **BullMQ · mensageria** | **Fault‑Tolerant com Transactional Outbox e Auto‑Reconciliation** — fila **`delivery-queue`**. O registo **`pending_deliveries`** é escrito na **mesma transação** Postgres do pagamento; o enqueue só ocorre **após commit** · jobs `deliver-chatwoot` com **retry exponencial**. **Shutdown gracioso** (`SIGTERM`/`SIGINT`): fecha HTTP → **`worker.close()`** → **`queue.close()`**. **Scheduler BullMQ (`upsertJobScheduler`)**: job **`outbox-sweep` a cada 30 min** re‑enfileira entradas **`PENDING` com `created_at` > 10 min** (o **`jobId` = UUID** evita duplicidade se o job ainda estiver no Redis). Falhas terminais → nota privada Chatwoot. |
 | **Ledger (razão)** | Todas as movimentações monetárias materializadas em **`transaction_ledger`** com **`debit_account_id`** e **`credit_account_id`** sempre preenchidos, montantes positivos, metadados e chaves **`idempotency_key`** onde importa reconciliar webhooks Mercado Pago. |
 
 Cofre bruto **`payment_orders.raw_webhook_payload`** permite reconstruir qualquer notificação de gateway já recebida.
 
 ---
 
+## Veredito de integridade (CTO — core engine)
+
+Declarado **[100% READY]** para este backend quanto aos pilares fechados em ciclo CTO:
+
+| Pilar | Estado |
+|--------|--------|
+| **Consumo PACOTE × carteira** | Trilhos fixados ao **`POST /sessions`** (`billing_track`); PACOTE debita apenas **`CLIENT_PACOTE_ESCROW`** + encerra lote (**`remaining_amount = 0`**, **`consumed_at`**) ao **`telecom COMPLETED`**. |
+| **Piso 15 min (automático estrito)** | Após **`COMPLETED`**, só se **`ended_reason_code ∈ SESSION_TECH_FLOOR_ELIGIBLE_END_REASONS`** e **`paid_minutes_used < SESSION_MINIMUM_FLOOR_MINUTES`** (`business.config`; override env `SESSION_TECH_FLOOR_ELIGIBLE_END_REASONS`). |
+| **Mutex anti-atropelo fila** | **`POST /api/v1/queues`** protegido com o mesmo **`specialist_mutex`** Redis (TTL 45s). |
+| **Webhook Mercado Pago** | **`validateMercadoPagoWebhook`** (`x-signature` HMAC **`MP_WEBHOOK_SECRET`**) — assinatura inválida → **401**. |
+
+> Executar migrações **`20260506141500-add-ledger-reference-credit-expiry.js`** (enum ledger `CREDIT_EXPIRY`) e **`20260617120000-billing-pacote-escrow-and-session-track.js`** antes do deploy (`npm run migrate`).
+
+---
+
 ## Módulos Ativos
+
 
 ### [Financeiro]
 
@@ -48,7 +64,7 @@ Cofre bruto **`payment_orders.raw_webhook_payload`** permite reconstruir qualque
 - Reversões e chargebacks atualizam lotes **`client_credit_lots`** quando aplicável (`REFUND`, `CHARGEBACK` no Ledger).
 - **Piso económico de 15 minutos** configurável (`SESSION_MINIMUM_FLOOR_MINUTES`): créditos **`FLOOR_COMPENSATION`** proporcionais a `MAX(0, floor − minutos_pagos_consumidos_snapshot)` quando a sessão fecha com motivos elegíveis (`business.config`).
 - **Liquidações manuais** via API interna (ex.: comandos Chatwoot) usando `approveManualAttendancePayment`.
-- **Liquidação comercial pós‑telecom COMPLETED (`economics_settled_at`):** `CLIENT_WALLET` → `PLATFORM_SUSPENSE` (**`SESSION_CONSUMPTION`**), splits **`COMMISSION_SPLIT`** para **`SPECIALIST_EARNINGS`** e **`PLATFORM_REVENUE`** com percentual **`specialist_commission_pct_snapshot`** (sobre valor absorvido da carteira, até o total tarifável da sessão).
+- **Liquidação comercial pós‑telecom COMPLETED (`economics_settled_at`):** carteira **`CLIENT_WALLET`** **ou** conta segregada **`CLIENT_PACOTE_ESCROW`** (consumo primeiro por lote PACOTE na sessão, depois avulso) · débitos **`SESSION_CONSUMPTION`** até o tarifável da sessão; em pacotes, remanescente da reserva económica da sessão segue **`CREDIT_EXPIRY`** → **`PLATFORM_REVENUE`** (queima pós-consulta) · splits **`COMMISSION_SPLIT`** conforme **`specialist_commission_pct_snapshot`**.
 - **`POST /api/v1/payouts/request`** · **`GET /api/v1/payouts/me`** — pedidos PIX da taróloga com validação prévia no ledger (`SPECIALIST_EARNINGS` menos reserva de pedidos abertos legíveis pelo serviço).
 - **`PATCH /api/v1/sessions/:id/ritual`** — mensagem **`post_session_message`** (≤ 1500) pela tarólogo titular quando a sessão está encerrada à luz telecom/lifecycle · **`POST …/review`** com middleware **`CLIENTE`** explícito.
 - **Nova rota Gestora Nice:** **`GET /api/v1/admin/finance/transactions`** — extrato global do razão paginável (filtros `reference_type`, `occurred_from` / `occurred_to`).
@@ -112,7 +128,7 @@ npm run dev            # desenvolvimento (node --watch)
 
 Probes rápidos: **`GET /ping`**, **`GET /health`** (ou **`/api/v1/health`**) · Coleções exemplo em **`src/postman/`** · modelo relacional granular em **`src/documentacao/`**.
 
-Workers BullMQ opcionais: env **`DELIVERY_QUEUE_WORKER=true`** num processo dedicado (**apenas uma réplica**) para consumir `delivery-queue`; restantes apenas produtor HTTP.
+Workers BullMQ (processo com **`DELIVERY_QUEUE_WORKER=true`**): consome `delivery-queue`, regista **scheduler idempotente** `pending-deliveries-outbox-sweep` (sweep 30 min / “velhos” 10 min) e partilha o **shutdown gracioso** com o HTTP. Variáveis: **`GRACEFUL_SHUTDOWN_MS`** (default lógico 28 s, tecto 120 s) — deadline antes de `exit(1)` se o dreno não concluir. Em cluster, **uma réplica** worker; restantes só produtores HTTP.
 
 ---
 

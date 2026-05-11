@@ -97,7 +97,7 @@ function validateMercadoPagoWebhook(req, res, next) {
       dataIdPreview: dataId.slice(0, 16),
       requestIdPreview: String(xRequestId).slice(0, 16),
     });
-    return next(new AppError('Assinatura do webhook Mercado Pago inválida.', 403, null, true));
+    return next(new AppError('Assinatura do webhook Mercado Pago inválida.', 401, null, true));
   }
 
   return next();

@@ -2,6 +2,8 @@ const { Model, DataTypes } = require('sequelize');
 
 const ACCOUNT_TYPES = [
   'CLIENT_WALLET',
+  /** Pré‑pago pacote sessão única — não usa carteira avulsa. */
+  'CLIENT_PACOTE_ESCROW',
   'CLIENT_ESCROW_HOLD',
   'SPECIALIST_EARNINGS',
   'PLATFORM_REVENUE',

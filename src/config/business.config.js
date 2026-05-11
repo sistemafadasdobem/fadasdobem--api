@@ -31,6 +31,18 @@ function parseSessionFloorEligibleEndReasons() {
     .filter(Boolean);
 }
 
+/** Piso só em falhas técnica/plataforma (compensação pós-consulta `COMPLETED` — UX estrita CTO). */
+function parseSessionTechnicalFloorEligibleEndReasons() {
+  const raw = envString(
+    'SESSION_TECH_FLOOR_ELIGIBLE_END_REASONS',
+    'SPECIALIST_DISCONNECT,PLATFORM_ERROR,THIRD_PARTY_SDK_ERROR,NETWORK_ERROR'
+  );
+  return raw
+    .split(',')
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean);
+}
+
 module.exports = Object.freeze({
   /** Janela usada na UI/checkout para reserva de taróloga (minutos). */
   CLIENT_RESERVATION_MINUTES: envInt('CLIENT_RESERVATION_MINUTES', 5),
@@ -59,5 +71,10 @@ module.exports = Object.freeze({
   /** Motivos `sessions.ended_reason_code` elegíveis ao piso. */
   get SESSION_FLOOR_ELIGIBLE_END_REASONS() {
     return parseSessionFloorEligibleEndReasons();
+  },
+
+  /** Subconjunto técnico usado só na compensação automática pós‑`telecom COMPLETED`. */
+  get SESSION_TECH_FLOOR_ELIGIBLE_END_REASONS() {
+    return parseSessionTechnicalFloorEligibleEndReasons();
   },
 });

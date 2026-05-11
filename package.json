@@ -6,6 +6,8 @@
   "scripts": {
     "migrate": "node scripts/run-migrations.js",
     "seed:homolog": "node scripts/seed-dev-homolog.js",
+    "smoke": "node scripts/smoke-tests/runner.js",
+    "test:smoke": "jest --config scripts/smoke-tests/jest.config.cjs --runInBand --forceExit",
     "start": "node app.js",
     "dev": "node --watch app.js"
   },
@@ -34,7 +36,10 @@
     "socket.io": "^4.8.3"
   },
   "devDependencies": {
+    "@jest/globals": "^30.4.1",
     "@types/bcryptjs": "^2.4.6",
-    "@types/jsonwebtoken": "^9.0.10"
+    "@types/jsonwebtoken": "^9.0.10",
+    "jest": "^30.4.2",
+    "supertest": "^7.2.2"
   }
 }

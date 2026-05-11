@@ -11,6 +11,7 @@ const DEFAULT_PACKAGES = {
     amount_brl: 50.0,
     credit_type: 'PACOTE_SESSAO_UNICA',
     label: 'Pacote R$50',
+    consumption_modalities: ['TEXTO', 'VOZ'],
   },
 };
 

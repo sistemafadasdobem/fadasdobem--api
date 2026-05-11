@@ -7,6 +7,13 @@ const { normalizeEmail } = require('../auth/auth.constants');
 const DEFAULT_CLIENT_EMAIL = 'homolog@fadasdobem.test';
 const DEFAULT_SPECIALIST_USER_EMAIL = 'tarologa.homolog@fadasdobem.test';
 
+/** Alinhado a `sessions.service.js` — só para o cliente decidir UX (WideVoice vs Agora legacy). */
+function resolveSessionVideoTelecomDriverPublic() {
+  const raw = `${process.env.SESSION_VIDEO_TELECOM_DRIVER || 'WIDE_VOICE_VIDEO'}`.trim().toUpperCase();
+  if (raw === 'AGORA_RTC' || raw === 'AGORA_IO' || raw === 'AGORA') return 'AGORA_RTC';
+  return 'WIDE_VOICE_VIDEO';
+}
+
 /**
  * GET /api/v1/config/public
  * Sem segredos. Agora App ID é público no cliente; specialist_id vem da BD após `seed:homolog`.
@@ -43,6 +50,7 @@ const getPublic = catchAsyncRoute(async (req, res) => {
     res,
     {
       agora_app_id: agoraAppId,
+      session_video_telecom_driver: resolveSessionVideoTelecomDriverPublic(),
       api_version: API_VERSION_SEMVER,
       api_base_path: '/api/v1',
       homolog_login_email: homologLoginEmail,

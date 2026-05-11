@@ -43,6 +43,25 @@ module.exports = (sequelize) => {
         comment: 'Bloqueio administrativo (disputa, chargeback em análise)',
       },
       notes: { type: DataTypes.STRING(512), allowNull: true },
+
+      consumption_modalities: {
+        type: DataTypes.JSONB,
+        allowNull: true,
+        comment:
+          "Para PACOTE: ex. `[\"VIDEO\"]` ou `[\"TEXTO\",\"VOZ\"]`. `null`/vazio = compatível com qualquer modalidade (legado).",
+      },
+
+      binding_session_id: {
+        type: DataTypes.UUID,
+        allowNull: true,
+        comment: 'Pacote atualmente dedicado à sessão (exclusividade — uma sessão ativa por lote).',
+      },
+
+      pacote_closure_session_id: {
+        type: DataTypes.UUID,
+        allowNull: true,
+        comment: 'Última sessão em que o pacote foi encerrado (remanescente queimado).',
+      },
     },
     {
       sequelize,

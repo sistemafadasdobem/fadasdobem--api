@@ -1,5 +1,6 @@
 'use strict';
 
+const { randomUUID } = require('crypto');
 const { Op } = require('sequelize');
 const db = require('../../models');
 const AppError = require('../../utils/AppError');
@@ -7,6 +8,10 @@ const socketGateway = require('../../providers/socket/socket.gateway');
 const chatwootClient = require('../../providers/chatwoot/chatwoot.client');
 
 const QUEUE_MESSAGES = require('./queue.constants');
+const {
+  acquireSpecialistPaymentMutex,
+  releaseSpecialistPaymentMutex,
+} = require('../../providers/redis/specialist.payment.mutex');
 
 const {
   sequelize,
@@ -326,48 +331,76 @@ async function joinQueueAuthenticatedUser(authUser, body = {}) {
     );
   }
 
-  const existing = await Queue.findOne({
-    where: {
-      client_id: clientResolved.id,
-      specialist_id: specialistId,
-      status: 'WAITING',
-    },
-    paranoid: true,
-  });
+  const mutexTok = randomUUID();
+  let mutexHeldForSpecialistId = null;
+  const lk = await acquireSpecialistPaymentMutex(specialistId, mutexTok, 45);
+  if (!lk.ok && lk.reason === 'lock_held') {
+    throw new AppError(
+      'Liquidação/fila ocupada para esta especialista — tente outra vez em instantes.',
+      503,
+      { code: 'SPECIALIST_MUTEX_BUSY', specialist_id: specialistId },
+      false
+    );
+  }
+  if (!lk.ok) {
+    throw new AppError(
+      'Infraestrutura de filas indisponível (Redis).',
+      503,
+      { code: 'REDIS_UNAVAILABLE' },
+      false
+    );
+  }
+  mutexHeldForSpecialistId = specialistId;
 
-  const queueRow =
-    existing ??
-    (
-      await Queue.create({
+  try {
+    const existing = await Queue.findOne({
+      where: {
         client_id: clientResolved.id,
         specialist_id: specialistId,
         status: 'WAITING',
-        preferred_modality: preferredModality,
-      })
-    );
-
-  if (
-    `${queueRow.preferred_modality || ''}`.toUpperCase() !== preferredModality &&
-    `${queueRow.status || ''}`.toUpperCase() === 'WAITING'
-  ) {
-    await queueRow.update({
-      preferred_modality: preferredModality,
+      },
+      paranoid: true,
     });
+
+    const queueRow =
+      existing ??
+      (
+        await Queue.create({
+          client_id: clientResolved.id,
+          specialist_id: specialistId,
+          status: 'WAITING',
+          preferred_modality: preferredModality,
+        })
+      );
+
+    if (
+      `${queueRow.preferred_modality || ''}`.toUpperCase() !== preferredModality &&
+      `${queueRow.status || ''}`.toUpperCase() === 'WAITING'
+    ) {
+      await queueRow.update({
+        preferred_modality: preferredModality,
+      });
+    }
+
+    await notifyQueueSockets(specialistId);
+
+    const eta = await getQueuePositionAndEta(queueRow.id, specialistId).catch(() => ({
+      position: null,
+      estimated_wait_minutes: 0,
+    }));
+
+    const plainQueue = queueRow.get({ plain: true });
+
+    return {
+      fila: plainQueue,
+      eta,
+    };
+  } finally {
+    if (mutexHeldForSpecialistId) {
+      // eslint-disable-next-line no-await-in-loop
+      await releaseSpecialistPaymentMutex(mutexHeldForSpecialistId, mutexTok);
+    }
   }
-
-  await notifyQueueSockets(specialistId);
-
-  const eta = await getQueuePositionAndEta(queueRow.id, specialistId).catch(() => ({
-    position: null,
-    estimated_wait_minutes: 0,
-  }));
-
-  const plainQueue = queueRow.get({ plain: true });
-
-  return {
-    fila: plainQueue,
-    eta,
-  };
 }
 
 async function leaveQueueAuthenticatedUser(authUser, queueId) {

@@ -1,5 +1,5 @@
 const agoraClient = require('../../providers/agora/agora.client');
-const intelbrasClient = require('../../providers/intelbras/intelbras.client');
+const intelbrasService = require('../../providers/intelbras/intelbras.service');
 
 /**
  * Estratégia unificada: “como encerrar a mídia” sem acoplar ao motor de bilhetagem.
@@ -39,23 +39,16 @@ async function disconnectSession(session) {
   }
 
   if (prov === 'INTELBRAS') {
-    const uid = `${session.intelbras_unique_id || ''}`.trim();
-    if (!uid) {
-      const detail =
-        '[telecom:Intelbras] disconnectSession — `intelbras_unique_id` vazio (necessário para REST desligar).';
-      console.warn(detail, { sessionId: session.id, provider_channel_id: session.provider_channel_id });
-      return { ok: false, provider: prov, detail };
-    }
     try {
-      const hang = await intelbrasClient.hangupCall(uid);
+      const hang = await intelbrasService.hangupSessionMedia(session);
       return {
         ok: Boolean(hang.ok),
         provider: prov,
-        detail: hang.ok ? 'AMI Hangup enviado.' : `[telecom:Intelbras] AMI: ${JSON.stringify(hang.raw || hang)}`,
+        detail: hang.steps?.length ? hang.steps.join(' | ') : 'WideVoice hangup concluído.',
       };
     } catch (err) {
-      const detail = `[telecom:Intelbras] Hangup falhou: ${err?.message || err}`;
-      console.error(detail, { sessionId: session.id, uniqueId: uid.slice(0, 64) });
+      const detail = `[telecom:Intelbras/WideVoice] hangup falhou: ${err?.message || err}`;
+      console.error(detail, { sessionId: session.id });
       return { ok: false, provider: prov, detail };
     }
   }

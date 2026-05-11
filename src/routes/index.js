@@ -10,6 +10,7 @@ const queuesRoutes = require('../features/queues/queues.routes');
 const adminRoutes = require('../features/admin/admin.routes');
 const payoutsRoutes = require('../features/payouts/payouts.routes');
 const diariesRoutes = require('../features/diaries/diaries.routes');
+const telecomLabRoutes = require('../features/telecom/telecom.lab.routes');
 const { responderSucesso } = require('../utils/response.util');
 const { API_VERSION_SEMVER } = require('../config/version');
 
@@ -26,6 +27,7 @@ router.use('/v1/queues', queuesRoutes);
 router.use('/v1/admin', adminRoutes);
 router.use('/v1/payouts', payoutsRoutes);
 router.use('/v1/diaries', diariesRoutes);
+router.use('/v1/telecom', telecomLabRoutes);
 
 router.get('/ping', (_req, res) => {
   return responderSucesso(

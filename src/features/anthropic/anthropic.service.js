@@ -476,4 +476,6 @@ module.exports = {
   replyForUserPlainText,
   generateReplyFromMessages,
   extractFsmLeadClienteProfile,
+  /** Smoke / integrações: lado servidor da tool Chatwoot (sem round-trip Anthropic). */
+  fulfillTriggerCrisisInterventionTool,
 };

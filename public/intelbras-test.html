@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Laboratório WideVoice — Intelbras (homologação)</title>
+  <style>
+    :root {
+      font-family: system-ui, sans-serif;
+      background: #0f1419;
+      color: #e7ecf1;
+      --accent: #22c55e;
+      --border: #2a3441;
+      --warn: #f59e0b;
+    }
+    body { margin: 0; padding: 16px; max-width: 960px; margin-inline: auto; }
+    h1 { font-size: 1.25rem; margin-top: 0; }
+    h2 { font-size: 0.95rem; color: #9aa8b3; margin: 1rem 0 0.45rem; }
+    fieldset {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 14px;
+      margin-bottom: 14px;
+      background: #151b22;
+    }
+    legend { padding: 0 8px; color: var(--accent); }
+    label { display: block; font-size: 0.8rem; color: #9aa8b3; margin-bottom: 4px; }
+    input[type="text"], input[type="password"] {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 8px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #0f1419;
+      color: #e7ecf1;
+      margin-bottom: 10px;
+    }
+    button {
+      padding: 10px 16px;
+      border-radius: 6px;
+      border: none;
+      background: var(--accent);
+      color: #071018;
+      font-weight: 600;
+      cursor: pointer;
+      margin-right: 8px;
+      margin-bottom: 8px;
+    }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    button.secondary { background: #2a3441; color: #e7ecf1; }
+    button.warn { background: var(--warn); color: #1a1204; }
+    #log {
+      font-family: ui-monospace, monospace;
+      font-size: 12px;
+      background: #0a0e12;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      height: 280px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .video-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 10px;
+    }
+    @media (max-width: 640px) { .video-row { grid-template-columns: 1fr; } }
+    .video-box {
+      display: flex;
+      flex-direction: column;
+      background: #000;
+      border-radius: 8px;
+      aspect-ratio: 16/10;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      min-height: 160px;
+    }
+    .video-box h3 {
+      font-size: 11px;
+      margin: 0;
+      padding: 6px 8px;
+      flex: 0 0 auto;
+      background: #1a222c;
+      color: #9aa8b3;
+    }
+    .video-box .inner {
+      flex: 1 1 auto;
+      min-height: 0;
+      width: 100%;
+      position: relative;
+      background: #0a0a0a;
+    }
+    .video-box .inner video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+      position: absolute;
+      inset: 0;
+    }
+    .video-placeholder {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 10px;
+      text-align: center;
+      font-size: 12px;
+      color: #6b7c88;
+      line-height: 1.45;
+    }
+    .hint { font-size: 0.75rem; color: #7d8a93; margin-top: 6px; }
+    .pill { font-size: 0.72rem; padding: 2px 8px; border-radius: 999px; background: #1e2936; display: inline-block; }
+    #labStatus {
+      margin-top: 8px;
+      padding: 8px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      font-size: 0.82rem;
+    }
+    #labStatus.err { border-color: #b91c1c; background: rgba(185,28,28,0.12); color: #fecaca; }
+    #labStatus.ok { border-color: #166534; color: #bbf7d0; }
+    a { color: #86efac; }
+  </style>
+</head>
+<body>
+  <h1>Laboratório híbrido — WideVoice / Intelbras</h1>
+  <p class="hint">
+    As credenciais <strong>login</strong> e <strong>token</strong> WideVoice ficam apenas no servidor (<code>.env</code>).
+    Esta página chama <code>/api/v1/telecom/lab/*</code> (ativar com <code>INTELBRAS_TELECOM_LAB_ENABLED=true</code>).
+  </p>
+  <p class="hint">
+    Abre em <code id="hintUrl">…/intelbras-test.html</code> no mesmo host da API ou usa <code>?api=https://seu-servidor</code>.
+    <span class="pill">Vídeo em produção costuma vir do softphone/WebRTC da central</span>, não deste HTML — aqui validas a API (CHAMADA OK / ID).
+  </p>
+
+  <fieldset>
+    <legend>Servidor &amp; laboratório</legend>
+    <label>Raiz da API (vazio = mesma origem da página)</label>
+    <input type="text" id="apiRoot" placeholder="https://homolog.example.com" autocomplete="off" />
+    <label>Segredo do laboratório (<code>x-telecom-lab-secret</code>) — se definido no <code>.env</code></label>
+    <input type="password" id="labSecret" placeholder="INTELBRAS_TELECOM_LAB_SECRET (opcional)" autocomplete="off" />
+    <p class="hint">O segredo pode ser gravado ao clicar «Guardar» (apenas neste navegador / sessionStorage).</p>
+    <button type="button" class="secondary" id="btnSaveConfig">Guardar raiz + segredo (navegador)</button>
+    <button type="button" class="secondary" id="btnPingLab">Ping laboratório</button>
+    <div id="labStatus" aria-live="polite">Ainda não testado.</div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Click-to-call (vídeo/voz pela central)</legend>
+    <label>Origem — ramal / ID da taróloga na central (<code>origem</code>)</label>
+    <input type="text" id="origem" placeholder="ex.: 2002" autocomplete="off" />
+    <label>Destino — telefone cliente (com DDD; E.164 ou nacional — o servidor aplica DDD 11 vs 011)</label>
+    <input type="text" id="destino" placeholder="ex.: 5511999887766 ou 11999887766" autocomplete="off" />
+    <button type="button" id="btnCall">Iniciar chamada (clicktocall)</button>
+    <button type="button" class="warn" id="btnRelease">Liberar ramal</button>
+    <button type="button" class="secondary" id="btnStatus">Consultar status ramais (statusramais)</button>
+    <p class="hint"><strong>Liberar ramal</strong> usa o valor de <strong>Origem</strong> (mesmo campo do ramal).</p>
+  </fieldset>
+
+  <fieldset>
+    <legend>Vídeo (pré-visualização local opcional)</legend>
+    <div class="video-row">
+      <div class="video-box">
+        <h3>Local (esta máquina)</h3>
+        <div class="inner" id="wrapLocal">
+          <div class="video-placeholder" id="phLocal">Opcional: câmara local para teste — não é o fluxo WideVoice.</div>
+          <video id="vidLocal" playsinline muted autoplay style="display:none"></video>
+        </div>
+      </div>
+      <div class="video-box">
+        <h3>Remoto (central / outro terminal)</h3>
+        <div class="inner">
+          <div class="video-placeholder">
+            Áudio/vídeo da chamada ativa aparece no <strong>softphone ou app</strong> da Intelbras / WebRTC configurado pela central,
+            não neste navegador, salvo integração futura.
+          </div>
+        </div>
+      </div>
+    </div>
+    <button type="button" class="secondary" id="btnCam">Ligar pré-visualização de câmara (local)</button>
+    <button type="button" class="secondary" id="btnCamStop">Parar câmara</button>
+  </fieldset>
+
+  <h2>Log (estilo consola)</h2>
+  <div id="log"></div>
+
+  <script>
+    (function () {
+      var STORAGE_API = 'intelbrasTestApiRoot';
+      var STORAGE_SECRET = 'intelbrasTestLabSecret';
+      var API_BASE = '';
+      var logEl = document.getElementById('log');
+      var localStream = null;
+
+      function parseApiRootInput(raw) {
+        var s = String(raw || '').trim().replace(/\/$/, '');
+        if (!s) return '';
+        if (/\/api\/v1$/i.test(s)) return s.slice(0, -'/api/v1'.length);
+        return s;
+      }
+
+      function normalizeToApiV1(root) {
+        root = String(root || '').trim().replace(/\/$/, '');
+        if (!root) return '';
+        if (/\/api\/v1$/i.test(root)) return root;
+        return root + '/api/v1';
+      }
+
+      function resolveApiBase() {
+        var params = new URLSearchParams(window.location.search || '');
+        var fromQuery = parseApiRootInput(params.get('api') || params.get('apiBase') || '');
+        if (fromQuery) return normalizeToApiV1(fromQuery);
+
+        var fromInput = parseApiRootInput(document.getElementById('apiRoot').value);
+        if (fromInput) return normalizeToApiV1(fromInput);
+
+        try {
+          var stored = sessionStorage.getItem(STORAGE_API);
+          if (stored) return normalizeToApiV1(parseApiRootInput(stored));
+        } catch (e) {}
+
+        if (window.location.protocol === 'file:') return '';
+
+        var o = window.location.origin;
+        if (o && o !== 'null' && (window.location.protocol === 'http:' || window.location.protocol === 'https:')) {
+          return normalizeToApiV1(o);
+        }
+        return '';
+      }
+
+      function apiUrl(subPath) {
+        var p = subPath.startsWith('/') ? subPath : '/' + subPath;
+        return API_BASE + p;
+      }
+
+      function log(msg) {
+        var t = new Date().toISOString().slice(11, 23);
+        logEl.textContent += '[' + t + '] ' + msg + '\n';
+        logEl.scrollTop = logEl.scrollHeight;
+        console.log('[intelbras-test]', msg);
+      }
+
+      function labHeaders() {
+        var h = { Accept: 'application/json' };
+        var sec = document.getElementById('labSecret').value.trim();
+        if (sec) h['x-telecom-lab-secret'] = sec;
+        return h;
+      }
+
+      function describeFetchError(err) {
+        var m = (err && err.message) || String(err);
+        if (/Failed to fetch|NetworkError|Load failed/i.test(m)) {
+          return (
+            m +
+            ' — CORS/rede ou URL. Usa a página no mesmo domínio da API ou ?api=https://host:porta'
+          );
+        }
+        return m;
+      }
+
+      function pretty(obj) {
+        try {
+          return JSON.stringify(obj, null, 2);
+        } catch (e) {
+          return String(obj);
+        }
+      }
+
+      function setLabStatus(text, kind) {
+        var el = document.getElementById('labStatus');
+        el.textContent = text;
+        el.className = kind === 'ok' ? 'ok' : kind === 'err' ? 'err' : '';
+      }
+
+      async function refreshApiBase() {
+        API_BASE = resolveApiBase();
+        log('API_BASE = ' + (API_BASE || '(vazio — configura a raiz da API)'));
+        return API_BASE;
+      }
+
+      async function fetchJson(method, path, body) {
+        var url = apiUrl(path);
+        var opts = {
+          method: method,
+          headers: Object.assign({}, labHeaders(), { 'Content-Type': 'application/json' }),
+          credentials: 'omit',
+          mode: 'cors',
+        };
+        if (body !== undefined) opts.body = JSON.stringify(body);
+        var res = await fetch(url, opts);
+        var json = null;
+        try {
+          json = await res.json();
+        } catch (e) {
+          json = { _parseError: 'Resposta não-JSON', status: res.status };
+        }
+        return { res: res, json: json };
+      }
+
+      document.getElementById('hintUrl').textContent =
+        window.location.origin && window.location.protocol !== 'file:'
+          ? window.location.origin + '/intelbras-test.html'
+          : '/intelbras-test.html (servido pelo Express)';
+
+      try {
+        var s = sessionStorage.getItem(STORAGE_API);
+        if (s) document.getElementById('apiRoot').value = s;
+        var sc = sessionStorage.getItem(STORAGE_SECRET);
+        if (sc) document.getElementById('labSecret').value = sc;
+      } catch (e) {}
+
+      document.getElementById('btnSaveConfig').addEventListener('click', function () {
+        try {
+          sessionStorage.setItem(STORAGE_API, document.getElementById('apiRoot').value.trim());
+          sessionStorage.setItem(STORAGE_SECRET, document.getElementById('labSecret').value);
+        } catch (e) {
+          log('sessionStorage falhou: ' + e);
+        }
+        refreshApiBase();
+        log('Config guardada no navegador.');
+      });
+
+      document.getElementById('btnPingLab').addEventListener('click', async function () {
+        await refreshApiBase();
+        if (!API_BASE) {
+          setLabStatus('Define a raiz da API.', 'err');
+          return;
+        }
+        try {
+          log('GET ' + apiUrl('/telecom/lab/ping'));
+          var r = await fetch(apiUrl('/telecom/lab/ping'), {
+            method: 'GET',
+            headers: labHeaders(),
+            credentials: 'omit',
+            mode: 'cors',
+          });
+          var j = await r.json().catch(function () { return {}; });
+          log('HTTP ' + r.status + '\n' + pretty(j));
+          if (r.ok && j.sucesso) setLabStatus('Laboratório ativo — WideVoice base: ' + (j.dados && j.dados.widevoice_base_preview || 'ok'), 'ok');
+          else setLabStatus('Falha ping: HTTP ' + r.status + ' — ' + (j.mensagem || ''), 'err');
+        } catch (e) {
+          setLabStatus(describeFetchError(e), 'err');
+          log('ERRO: ' + describeFetchError(e));
+        }
+      });
+
+      document.getElementById('btnCall').addEventListener('click', async function () {
+        await refreshApiBase();
+        if (!API_BASE) {
+          log('ERRO: API_BASE vazio.');
+          return;
+        }
+        var origem = document.getElementById('origem').value.trim();
+        var destino = document.getElementById('destino').value.trim();
+        if (!origem || !destino) {
+          log('ERRO: preenche origem e destino.');
+          return;
+        }
+        try {
+          log('POST /telecom/lab/clicktocall ' + pretty({ origem: origem, destino: destino }));
+          var pack = await fetchJson('POST', '/telecom/lab/clicktocall', { origem: origem, destino: destino });
+          log('HTTP ' + pack.res.status + '\n' + pretty(pack.json));
+          if (pack.json && pack.json.sucesso && pack.json.dados) {
+            var id = pack.json.dados.call_id;
+            if (id) log('>>> ID chamada (central): ' + id);
+            var flat = pack.json.dados.widevoice_flat;
+            if (flat && flat.Status) log('>>> Status tuple: ' + flat.Status);
+          }
+        } catch (e) {
+          log('ERRO: ' + describeFetchError(e));
+        }
+      });
+
+      document.getElementById('btnRelease').addEventListener('click', async function () {
+        await refreshApiBase();
+        var ramal = document.getElementById('origem').value.trim();
+        if (!ramal) {
+          log('ERRO: preenche origem (ramal).');
+          return;
+        }
+        try {
+          log('POST /telecom/lab/liberarramal ' + pretty({ ramal: ramal }));
+          var pack = await fetchJson('POST', '/telecom/lab/liberarramal', { ramal: ramal });
+          log('HTTP ' + pack.res.status + '\n' + pretty(pack.json));
+        } catch (e) {
+          log('ERRO: ' + describeFetchError(e));
+        }
+      });
+
+      document.getElementById('btnStatus').addEventListener('click', async function () {
+        await refreshApiBase();
+        try {
+          log('POST /telecom/lab/statusramais {}');
+          var pack = await fetchJson('POST', '/telecom/lab/statusramais', {});
+          log('HTTP ' + pack.res.status + '\n' + pretty(pack.json));
+        } catch (e) {
+          log('ERRO: ' + describeFetchError(e));
+        }
+      });
+
+      document.getElementById('btnCam').addEventListener('click', async function () {
+        var vid = document.getElementById('vidLocal');
+        var ph = document.getElementById('phLocal');
+        try {
+          localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+          vid.srcObject = localStream;
+          vid.style.display = 'block';
+          ph.style.display = 'none';
+          await vid.play().catch(function () {});
+          log('Câmara local ligada (só para teste visual).');
+        } catch (e) {
+          log('Câmara: ' + ((e && e.message) || e));
+        }
+      });
+
+      document.getElementById('btnCamStop').addEventListener('click', function () {
+        var vid = document.getElementById('vidLocal');
+        var ph = document.getElementById('phLocal');
+        if (localStream) {
+          localStream.getTracks().forEach(function (t) { t.stop(); });
+          localStream = null;
+        }
+        vid.srcObject = null;
+        vid.style.display = 'none';
+        ph.style.display = 'flex';
+        log('Câmara local parada.');
+      });
+
+      refreshApiBase();
+      log('Página pronta. 1) Ativa INTELBRAS_TELECOM_LAB_ENABLED no servidor. 2) Ping laboratório. 3) Iniciar chamada.');
+    })();
+  </script>
+</body>
+</html>

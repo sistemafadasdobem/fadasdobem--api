@@ -233,6 +233,23 @@ module.exports = (sequelize) => {
         allowNull: true,
         comment: 'Liquidações SESSION_CONSUMPTION + COMMISSION_SPLIT idempotentes concluídas',
       },
+
+      billing_track: {
+        type: DataTypes.STRING(36),
+        allowNull: true,
+        comment: 'PACOTE_SESSAO_UNICA | CLIENT_WALLET — fixado ao criar sessão (trilhos exclusivos).',
+      },
+
+      consumption_credit_lot_id: {
+        type: DataTypes.UUID,
+        allowNull: true,
+      },
+
+      pacote_opening_remaining_snapshot: {
+        type: DataTypes.DECIMAL(14, 4),
+        allowNull: true,
+        comment: 'Saldo inicial do pacote (BRL) no instante da reserva para esta sessão.',
+      },
     },
     {
       sequelize,

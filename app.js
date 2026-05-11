@@ -24,6 +24,67 @@ const app = express();
 const server = http.createServer(app);
 const port = process.env.PORT || 3000;
 
+function setupGracefulShutdown(httpServer) {
+  let exiting = false;
+
+  /** @param {NodeJS.Signals | string} signal */
+  async function gracefulExit(signal) {
+    if (exiting) return;
+    exiting = true;
+
+    console.log(`[lifecycle] Sinal ${signal} — iniciando shutdown gracioso (HTTP → BullMQ → BD).`);
+
+    const envRaw = `${process.env.GRACEFUL_SHUTDOWN_MS || ''}`.trim();
+    const parsedMs = envRaw ? Number.parseInt(envRaw, 10) : NaN;
+    const maxMs = Number.isFinite(parsedMs)
+      ? Math.min(Math.max(parsedMs, 5000), 120000)
+      : 28000;
+
+    const forceTimer = setTimeout(() => {
+      console.error(`[lifecycle] Timeout ${maxMs}ms no shutdown — forçando process.exit(1).`);
+      process.exit(1);
+    }, maxMs);
+
+    await new Promise((resolve, reject) => {
+      httpServer.close((err) => (err ? reject(err) : resolve()));
+    }).catch((err) => {
+      console.warn('[lifecycle] server.close:', err?.message || err);
+    });
+
+    try {
+      const { shutdownDeliveryMessaging } = require('./src/queues/delivery.queue');
+      await shutdownDeliveryMessaging();
+    } catch (e) {
+      console.error('[lifecycle] shutdownDeliveryMessaging:', e?.stack || e);
+    }
+
+    try {
+      await sequelize.close();
+    } catch (e) {
+      console.warn('[lifecycle] sequelize.close:', e?.message || e);
+    }
+
+    clearTimeout(forceTimer);
+    console.log('[lifecycle] Shutdown concluído.');
+    process.exit(0);
+  }
+
+  process.once('SIGTERM', () => {
+    gracefulExit('SIGTERM').catch((err) => {
+      console.error('[lifecycle] erro em SIGTERM:', err?.stack || err);
+      process.exit(1);
+    });
+  });
+  process.once('SIGINT', () => {
+    gracefulExit('SIGINT').catch((err) => {
+      console.error('[lifecycle] erro em SIGINT:', err?.stack || err);
+      process.exit(1);
+    });
+  });
+}
+
+setupGracefulShutdown(server);
+
 const { initSocketGateway } = require('./src/providers/socket/socket.gateway');
 initSocketGateway(server);
 
@@ -36,7 +97,7 @@ app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 
-/** Mini front estático (ex.: `public/agora-test.html`) — mesma origem que `/api` evita CORS. */
+/** Mini front estático (`public/agora-test.html`, `public/intelbras-test.html`, …) — mesma origem que `/api` evita CORS. */
 app.use(express.static(path.join(__dirname, 'public'), { index: false }));
 
 app.use('/api', routes);

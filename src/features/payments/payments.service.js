@@ -20,6 +20,8 @@ const {
 const { enqueuePendingDeliveryJob } = require('../../queues/delivery.queue');
 const mpClient = require('../../providers/mercadopago/mercadopago.client');
 const { loadPackageCatalog } = require('./payments.constants');
+const { ensureClientPacoteEscrow } = require('../finance/ledgerAccounts.helper');
+const { resolveConsumptionModalitiesForLot } = require('./payments.modalities');
 
 function cloneJson(obj) {
   try {
@@ -315,7 +317,18 @@ async function reverseWalletTopup(order, mp, kind, t) {
     return;
   }
 
-  const wallet = await ensureClientWallet(order.client_id, t);
+  const lots = await ClientCreditLot.findAll({
+    where: { payment_order_id: order.id },
+    transaction: t,
+    lock: t.LOCK.UPDATE,
+  });
+  const hasPacoteLot = lots.some(
+    (lot) => `${lot.credit_type || ''}`.trim().toUpperCase() === 'PACOTE_SESSAO_UNICA'
+  );
+
+  const targetAcc = hasPacoteLot
+    ? await ensureClientPacoteEscrow(order.client_id, t)
+    : await ensureClientWallet(order.client_id, t);
   const reserve =
     kind === 'CHARGEBACK' ? await ensureChargebackReserve(t) : await ensurePlatformSuspense(t);
 
@@ -327,13 +340,14 @@ async function reverseWalletTopup(order, mp, kind, t) {
   const exists = await TransactionLedger.findOne({ where: { idempotency_key: idem }, transaction: t });
   if (exists) return;
 
-  const bal = Number(wallet.cached_balance ?? 0);
+  await targetAcc.reload({ transaction: t, lock: t.LOCK.UPDATE });
+  const bal = Number(targetAcc.cached_balance ?? 0);
   const reversal = Math.min(bal, amountGoal);
   if (reversal <= 0) return;
 
   await TransactionLedger.create(
     {
-      debit_account_id: wallet.id,
+      debit_account_id: targetAcc.id,
       credit_account_id: reserve.id,
       amount: reversal,
       reference_type: kind,
@@ -347,13 +361,14 @@ async function reverseWalletTopup(order, mp, kind, t) {
         mp_payment_id: String(mp.id),
         mp_status: mp.status,
         mp_status_detail: mp.status_detail || null,
+        settlement_target: hasPacoteLot ? 'CLIENT_PACOTE_ESCROW' : 'CLIENT_WALLET',
       },
       occurred_at: new Date(),
     },
     { transaction: t }
   );
 
-  await wallet.update({ cached_balance: roundMoney(bal - reversal) }, { transaction: t });
+  await targetAcc.update({ cached_balance: roundMoney(bal - reversal) }, { transaction: t });
 }
 
 /**
@@ -411,21 +426,36 @@ async function handleApproved(order, mp, t, deliveriesToEnqueueIds = []) {
   const suspense = await ensurePlatformSuspense(t);
   const wallet = await ensureClientWallet(order.client_id, t);
 
-  /** a) Razão económica oficial de crédito após webhook/captura autorizada (`PAYMENT_ACCREDITED`). */
+  const checkoutCtxEarly = order.checkout_context || {};
+  const ctypeRaw = `${checkoutCtxEarly.credit_type || 'AVULSO'}`.trim().toUpperCase();
+  const validTypesEarly = ClientCreditLot.CREDIT_TYPES || ['AVULSO', 'PACOTE_SESSAO_UNICA'];
+  const resolvedLotTypeEarly = validTypesEarly.includes(ctypeRaw) ? ctypeRaw : 'AVULSO';
+  const ledgerCreditTargetAcc =
+    resolvedLotTypeEarly === 'PACOTE_SESSAO_UNICA'
+      ? await ensureClientPacoteEscrow(order.client_id, t)
+      : wallet;
+
+  /** a) Crédito pós-gateway: carteira **avulsa** ou conta segregada **pacote sessão única**. */
+  await ledgerCreditTargetAcc.reload({ transaction: t, lock: t.LOCK.UPDATE }).catch(() => {});
   await TransactionLedger.create(
     {
       debit_account_id: suspense.id,
-      credit_account_id: wallet.id,
+      credit_account_id: ledgerCreditTargetAcc.id,
       amount: creditBrl,
       reference_type: 'PAYMENT_ACCREDITED',
       reference_id: order.id,
       idempotency_key: idem,
-      description: `Crédito aprovado via gateway (MP ${mp.id})`,
+      description:
+        resolvedLotTypeEarly === 'PACOTE_SESSAO_UNICA'
+          ? `Pré‑pago pacote sessão única creditado via MP ${mp.id}`
+          : `Crédito carteira via gateway (MP ${mp.id})`,
       metadata: {
         mp_payment_id: String(mp.id),
         mp_transaction_amount: order.mp_transaction_amount,
         mp_net_received_amount: order.mp_net_received_amount,
         mp_fee_amount: order.mp_fee_amount,
+        ledger_credit_account:
+          resolvedLotTypeEarly === 'PACOTE_SESSAO_UNICA' ? 'CLIENT_PACOTE_ESCROW' : 'CLIENT_WALLET',
       },
       occurred_at: new Date(mp.date_approved || Date.now()),
     },
@@ -523,12 +553,23 @@ async function handleApproved(order, mp, t, deliveriesToEnqueueIds = []) {
       remaining_amount: creditBrl,
       expires_at: null,
       notes: ctx.package_id ? `Pacote: ${ctx.package_id}` : ctx.label || null,
+      consumption_modalities:
+        lotType === 'PACOTE_SESSAO_UNICA'
+          ? resolveConsumptionModalitiesForLot(ctx, ctx.package_id ?? null)
+          : null,
     },
     { transaction: t }
   );
 
-  const newBal = roundMoney(Number(wallet.cached_balance ?? 0) + creditBrl);
-  await wallet.update({ cached_balance: newBal }, { transaction: t });
+  if (lotType === 'PACOTE_SESSAO_UNICA') {
+    const esc = ledgerCreditTargetAcc;
+    await esc.reload({ transaction: t, lock: t.LOCK.UPDATE });
+    const escBal = Number(esc.cached_balance ?? 0);
+    await esc.update({ cached_balance: roundMoney(escBal + creditBrl) }, { transaction: t });
+  } else {
+    const newBal = roundMoney(Number(wallet.cached_balance ?? 0) + creditBrl);
+    await wallet.update({ cached_balance: newBal }, { transaction: t });
+  }
 
   await order.update(
     {
@@ -630,10 +671,20 @@ async function reconcileLeadFsmPaymentsAfterConversion(leadId, clientId, t) {
     const dup = await TransactionLedger.findOne({ where: { idempotency_key: idem }, transaction: t });
     if (dup) continue;
 
+    const ctx = ord.checkout_context || {};
+    const creditType = ctx.credit_type || 'PACOTE_SESSAO_UNICA';
+    const validTypes = ClientCreditLot.CREDIT_TYPES || ['AVULSO', 'PACOTE_SESSAO_UNICA'];
+    const lotType = validTypes.includes(creditType) ? creditType : 'AVULSO';
+
+    const ledgerCred =
+      lotType === 'PACOTE_SESSAO_UNICA'
+        ? await ensureClientPacoteEscrow(clientId, t)
+        : wallet;
+
     await TransactionLedger.create(
       {
         debit_account_id: suspense.id,
-        credit_account_id: wallet.id,
+        credit_account_id: ledgerCred.id,
         amount: creditBrl,
         reference_type: 'PAYMENT_TOPUP',
         reference_id: ord.id,
@@ -643,16 +694,12 @@ async function reconcileLeadFsmPaymentsAfterConversion(leadId, clientId, t) {
           mp_payment_id: String(ord.mp_payment_id || ''),
           lead_fsm: true,
           lead_id: String(leadId),
+          target: lotType === 'PACOTE_SESSAO_UNICA' ? 'CLIENT_PACOTE_ESCROW' : 'CLIENT_WALLET',
         },
         occurred_at: new Date(ord.paid_at || Date.now()),
       },
       { transaction: t }
     );
-
-    const ctx = ord.checkout_context || {};
-    const creditType = ctx.credit_type || 'PACOTE_SESSAO_UNICA';
-    const validTypes = ClientCreditLot.CREDIT_TYPES || ['AVULSO', 'PACOTE_SESSAO_UNICA'];
-    const lotType = validTypes.includes(creditType) ? creditType : 'AVULSO';
 
     await ClientCreditLot.create(
       {
@@ -663,13 +710,17 @@ async function reconcileLeadFsmPaymentsAfterConversion(leadId, clientId, t) {
         remaining_amount: creditBrl,
         expires_at: null,
         notes: ctx.package_id ? `Pacote: ${ctx.package_id}` : ctx.label || 'Lead FSM PIX',
+        consumption_modalities:
+          lotType === 'PACOTE_SESSAO_UNICA'
+            ? resolveConsumptionModalitiesForLot(ctx, ctx.package_id_fsm ?? null)
+            : null,
       },
       { transaction: t }
     );
 
-    await wallet.reload({ transaction: t, lock: t.LOCK.UPDATE });
-    const curBal = Number(wallet.cached_balance ?? 0);
-    await wallet.update({ cached_balance: roundMoney(curBal + creditBrl) }, { transaction: t });
+    await ledgerCred.reload({ transaction: t, lock: t.LOCK.UPDATE });
+    const curCredBal = Number(ledgerCred.cached_balance ?? 0);
+    await ledgerCred.update({ cached_balance: roundMoney(curCredBal + creditBrl) }, { transaction: t });
   }
 }
 
