@@ -14,5 +14,6 @@ router.post('/lab/run-demo', telecomLabController.postRunDemo);
 router.post('/lab/clicktocall', telecomLabController.postClicktocall);
 router.post('/lab/liberarramal', telecomLabController.postLiberarramal);
 router.post('/lab/statusramais', telecomLabController.postStatusramais);
+router.post('/lab/statusoperacoes', telecomLabController.postStatusOperacoes);
 
 module.exports = router;

@@ -249,11 +249,37 @@ const postLiberarramal = catchAsyncRoute(async (req, res) => {
 const postStatusramais = catchAsyncRoute(async (req, res) => {
   const extra =
     req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
-  const { status, raw, flat } = await intelbrasService.statusRamais(extra);
+  const out = await intelbrasService.statusRamais(extra);
   return responderSucesso(
     res,
-    { http_status: status, widevoice_raw: raw, widevoice_flat: flat },
+    {
+      http_status: out.status,
+      widevoice_raw: out.raw,
+      widevoice_flat: out.flat,
+      widevoice_transport: out._transport ?? null,
+    },
     'statusramais consultado.',
+    200
+  );
+});
+
+/**
+ * POST /api/v1/telecom/lab/statusoperacoes — callcenter LOGIN/LOGOUT/pausas (WideVoice doc).
+ * Body opc.: { datainicio, datafim } em `YYYY-MM-DD HH:mm:ss`; se omitir, usa últimas 24h (timezone `INTELBRAS_WIDEVOICE_TZ`).
+ */
+const postStatusOperacoes = catchAsyncRoute(async (req, res) => {
+  const extra =
+    req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
+  const out = await intelbrasService.statusOperacoes(extra);
+  return responderSucesso(
+    res,
+    {
+      http_status: out.status,
+      widevoice_raw: out.raw,
+      widevoice_flat: out.flat,
+      widevoice_transport: out._transport ?? null,
+    },
+    'statusoperacoes consultado.',
     200
   );
 });
@@ -265,4 +291,5 @@ module.exports = {
   postClicktocall,
   postLiberarramal,
   postStatusramais,
+  postStatusOperacoes,
 };

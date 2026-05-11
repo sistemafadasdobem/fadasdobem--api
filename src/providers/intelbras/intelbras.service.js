@@ -102,7 +102,27 @@ function tupleArrayToPairs(data) {
 
 function flattenWideVoiceResponse(data) {
   if (Array.isArray(data)) {
-    return tupleArrayToPairs(data);
+    const tupleFlat = tupleArrayToPairs(data);
+    if (Object.keys(tupleFlat).length > 0) {
+      return tupleFlat;
+    }
+    const row0 = data[0];
+    if (
+      data.length > 0 &&
+      typeof row0 === 'object' &&
+      row0 !== null &&
+      !Array.isArray(row0)
+    ) {
+      const out = { _array_registos: data.length };
+      if (row0.Ramal != null) out._snapshot_primeiro_ramal = `${row0.Ramal}`;
+      if (row0.ramal != null && out._snapshot_primeiro_ramal == null) {
+        out._snapshot_primeiro_ramal = `${row0.ramal}`;
+      }
+      if (row0.tipo != null) out._snapshot_primeiro_tipo = `${row0.tipo}`;
+      if (row0.Status != null) out._snapshot_primeiro_status = `${row0.Status}`;
+      return out;
+    }
+    return {};
   }
   if (typeof data === 'string') {
     return { texto_literal: data };
@@ -379,10 +399,10 @@ async function wideVoiceAction(acao, extra = {}) {
   const { client, apiPath } = ensureHttp();
 
   const body = {
+    ...extra,
     acao,
     login,
     token,
-    ...extra,
   };
 
   const res = await client.post(apiPath, body, {
@@ -555,6 +575,60 @@ async function liberarRamal(ramal) {
 }
 
 /**
+ * Data/hora no formato da doc WideVoice (`YYYY-MM-DD HH:mm:ss`) numa timezone IANA.
+ */
+function formatWideVoiceDateTime(d, timeZone) {
+  const tz = `${timeZone ?? process.env.INTELBRAS_WIDEVOICE_TZ ?? 'America/Sao_Paulo'}`.trim();
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(d);
+  const g = (t) => parts.find((p) => p.type === t)?.value ?? '00';
+  return `${g('year')}-${g('month')}-${g('day')} ${g('hour')}:${g('minute')}:${g('second')}`;
+}
+
+/**
+ * Callcenter — login / logout / pausa (doc: `statusoperacoes` + `datainicio` / `datafim`).
+ * Se não passar datas, usa janela `INTELBRAS_STATUSOPERACOES_LOOKBACK_MS` (default 24h) até agora.
+ */
+async function statusOperacoes(extra = {}) {
+  const src = typeof extra === 'object' && extra && !Array.isArray(extra) ? { ...extra } : {};
+  const tz = `${process.env.INTELBRAS_WIDEVOICE_TZ || 'America/Sao_Paulo'}`.trim();
+  let datainicio = `${src.datainicio ?? src.inicio ?? ''}`.trim();
+  let datafim = `${src.datafim ?? src.fim ?? ''}`.trim();
+  delete src.datainicio;
+  delete src.datafim;
+  delete src.inicio;
+  delete src.fim;
+
+  if (!datainicio || !datafim) {
+    const lookbackMs = Math.min(
+      86400000 * 7,
+      Math.max(
+        60000,
+        parseInt(String(process.env.INTELBRAS_STATUSOPERACOES_LOOKBACK_MS || '86400000'), 10) || 86400000
+      )
+    );
+    const end = new Date();
+    const start = new Date(end.getTime() - lookbackMs);
+    if (!datainicio) datainicio = formatWideVoiceDateTime(start, tz);
+    if (!datafim) datafim = formatWideVoiceDateTime(end, tz);
+  }
+
+  return wideVoiceAction('statusoperacoes', {
+    ...src,
+    datainicio,
+    datafim,
+  });
+}
+
+/**
  * Consulta estados de ramais (polling curto — worker dedicado pode consumir).
  */
 async function statusRamais(extra = {}) {
@@ -640,6 +714,7 @@ module.exports = {
   clickToCallDetailed,
   liberarRamal,
   statusRamais,
+  statusOperacoes,
   statusReport,
   hangupSessionMedia,
   formatBrazilDestinationForWideVoice: dialPlan.formatBrazilDestinationForWideVoice,

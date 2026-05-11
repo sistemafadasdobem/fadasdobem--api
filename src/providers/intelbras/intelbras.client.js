@@ -15,6 +15,7 @@ module.exports = {
     svc.clickToCall({ origem: ramalOrigem, destino: numeroDestino }),
   liberarRamal: svc.liberarRamal,
   statusRamais: svc.statusRamais,
+  statusOperacoes: svc.statusOperacoes,
   statusReport: svc.statusReport,
   hangupSessionMedia: svc.hangupSessionMedia,
   formatBrazilDestinationForWideVoice: svc.formatBrazilDestinationForWideVoice,
