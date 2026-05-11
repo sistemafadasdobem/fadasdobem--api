@@ -9,7 +9,9 @@ const AppError = require('./AppError');
  * - **Outros DDD** → por defeito **`011`+DDD+assinante**. Com **`INTELBRAS_DIAL_USE_011_FOR_NON_LOCAL=false`**
  *   fica só `DDD+número` (**exemplo doc Intelbras**: também pode exigir **`0`+DDD+número** →
  *   **`INTELBRAS_CLICKTOCALL_PREPEND_ZERO=true`** só para chamadas onde DDD ≠ local).
- * - Algumas centrais antigas pedem móvel **sem** o 9 inicial após o DDD (`71`+8 dígitos): **`INTELBRAS_CLICKTOCALL_DROP_MOBILE_NINE=true`**.
+ * - **`INTELBRAS_CLICKTOCALL_PREPEND_ROUTE`** (ex. **`015`**) — código de seleção/rota antes do nacional; suporte pode exigir
+ *   **`015` + DDD + assinante** em vez de um único `0` inicial (`PREPEND_ZERO`). Se definido para DDD≠local com tronco `011`
+ *   desligado, **substitui** `INTELBRAS_CLICKTOCALL_PREPEND_ZERO` para esse caso.
  */
 
 function onlyDigits(input) {
@@ -30,6 +32,11 @@ function clickToCallPrependLeadingZeroForNonLocal() {
 function clickToCallDropMobileNineAfterDdd() {
   const v = `${process.env.INTELBRAS_CLICKTOCALL_DROP_MOBILE_NINE ?? 'false'}`.trim().toLowerCase();
   return v === 'true' || v === '1' || v === 'yes' || v === 'on';
+}
+
+/** Prefixo de discagem/rota só dígitos (ex.: `015`) antes de `DDD+assinante` para DDD≠local — ver suporte/trunk. */
+function clickToCallPrependRouteDigits() {
+  return onlyDigits(process.env.INTELBRAS_CLICKTOCALL_PREPEND_ROUTE ?? '');
 }
 
 /**
@@ -103,11 +110,16 @@ function formatBrazilDestinationForWideVoice(raw, opts = {}) {
     formatted = `011${ddd}${subscriber}`;
   }
 
-  /** Só faz sentido com tronco `011` desligado; reproduz padrão `048…` da documentação. */
-  if (
+  const routePre = clickToCallPrependRouteDigits();
+  const nonLocalNo011 =
+    !use011TrunkForNonLocalDdd() && ddd !== localDdd;
+
+  /** Ex.: conta pede `01571983141335` (rota/código **`015`** + nacional) em vez de `0719…`. */
+  if (routePre && nonLocalNo011) {
+    formatted = `${routePre}${ddd}${subscriber}`;
+  } else if (
     clickToCallPrependLeadingZeroForNonLocal() &&
-    !use011TrunkForNonLocalDdd() &&
-    ddd !== localDdd
+    nonLocalNo011
   ) {
     if (!formatted.startsWith('0')) {
       formatted = `0${formatted}`;
@@ -122,5 +134,6 @@ module.exports = {
   formatBrazilDestinationForWideVoice,
   use011TrunkForNonLocalDdd,
   clickToCallPrependLeadingZeroForNonLocal,
+  clickToCallPrependRouteDigits,
   clickToCallDropMobileNineAfterDdd,
 };

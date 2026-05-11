@@ -18,6 +18,7 @@ const {
 const {
   use011TrunkForNonLocalDdd,
   clickToCallPrependLeadingZeroForNonLocal,
+  clickToCallPrependRouteDigits,
   clickToCallDropMobileNineAfterDdd,
 } = require('../../utils/widevoiceDialPlan.util');
 
@@ -128,6 +129,7 @@ const postRunDemo = catchAsyncRoute(async (req, res) => {
     INTELBRAS_DIAL_LOCAL_DDD: `${process.env.INTELBRAS_DIAL_LOCAL_DDD || '11'}`.trim(),
     INTELBRAS_DIAL_USE_011_FOR_NON_LOCAL: use011TrunkForNonLocalDdd(),
     INTELBRAS_CLICKTOCALL_PREPEND_ZERO: clickToCallPrependLeadingZeroForNonLocal(),
+    INTELBRAS_CLICKTOCALL_PREPEND_ROUTE: clickToCallPrependRouteDigits() || undefined,
     INTELBRAS_CLICKTOCALL_DROP_MOBILE_NINE: clickToCallDropMobileNineAfterDdd(),
   });
 
@@ -166,7 +168,7 @@ const postRunDemo = catchAsyncRoute(async (req, res) => {
     destino_discado_servidor: detail.destino_enviado,
     origem_ramal: origem,
     dica_nao_tocou:
-      'CHAMADA OK só confirma a API. Se não toca: (1) `statusramais` / widevoice-check — ramal origem IDLE, não «In use» noutra chamada. (2) DDD≠local sem 011: tentar INTELBRAS_CLICKTOCALL_PREPEND_ZERO=true (ex. 0719…) como doc Intelbras. (3) Tronco 011 na central: INTELBRAS_DIAL_USE_011_FOR_NON_LOCAL=true. (4) Alguns troncos marcam móvel sem o 9 após o DDD: INTELBRAS_LAB_DESTINO em E.164 «curto» (ex. 557183…) ou INTELBRAS_CLICKTOCALL_DROP_MOBILE_NINE=true com número completo. (5) Rota/roaming/PBX — confirmar formato `destino` com suporte Intelbras.',
+      'CHAMADA OK só confirma a API. Se não toca: (1) `statusramais` / widevoice-check — ramal origem IDLE. (2) Suporte pode exigir **`015`+DDD+número** → `INTELBRAS_CLICKTOCALL_PREPEND_ROUTE=015` + `PREPEND_ZERO=false`. (3) Formato `011` / `0` / 9 móvel conforme tronco — alinhar com Intelbras. (4) Perfil telefonista / ramal com saída.',
   });
 
   return responderSucesso(
@@ -179,7 +181,7 @@ const postRunDemo = catchAsyncRoute(async (req, res) => {
       widevoice_raw: detail.widevoice_raw,
       widevoice_flat: detail.widevoice_flat,
       proximo_passo:
-        'Se não tocou: ver ramal livre em statusramais, inspeccionar `destino_enviado` (0 inicial / 011) com a Intelbras. «Liberar ramal» se o SIP ficar preso.',
+        'Se não tocou: statusramais · `destino_enviado` (ex. `015…` vs `07…` vs `011`) com a Intelbras. «Liberar ramal» se SIP preso.',
     },
     'Demonstração WideVoice: CHAMADA OK.',
     200

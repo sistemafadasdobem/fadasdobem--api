@@ -204,6 +204,7 @@ function peekWideVoiceConfig() {
       local_ddd: `${process.env.INTELBRAS_DIAL_LOCAL_DDD || '11'}`.trim(),
       use_011_for_non_local: dialPlan.use011TrunkForNonLocalDdd(),
       prepend_zero_non_local: dialPlan.clickToCallPrependLeadingZeroForNonLocal(),
+      prepend_route_digits: dialPlan.clickToCallPrependRouteDigits() || null,
     },
   };
 }
