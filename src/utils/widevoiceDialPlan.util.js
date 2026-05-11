@@ -6,8 +6,9 @@ const AppError = require('./AppError');
  * Discagem BR para WideVoice (`destino` em `clicktocall`).
  *
  * - **DDD “local”** (`INTELBRAS_DIAL_LOCAL_DDD`, default **11**) → só `DDD+assinante`, sem `011`.
- * - **Outros DDD** → por defeito **`011`+DDD+assinante**. Se a central **não** usa esse tronco
- *   (ex.: apenas nacional **71**98314…), defina **`INTELBRAS_DIAL_USE_011_FOR_NON_LOCAL=false`**.
+ * - **Outros DDD** → por defeito **`011`+DDD+assinante**. Com **`INTELBRAS_DIAL_USE_011_FOR_NON_LOCAL=false`**
+ *   fica só `DDD+número` (**exemplo doc Intelbras**: também pode exigir **`0`+DDD+número** →
+ *   **`INTELBRAS_CLICKTOCALL_PREPEND_ZERO=true`** só para chamadas onde DDD ≠ local).
  */
 
 function onlyDigits(input) {
@@ -18,6 +19,11 @@ function use011TrunkForNonLocalDdd() {
   const v = `${process.env.INTELBRAS_DIAL_USE_011_FOR_NON_LOCAL ?? 'true'}`.trim().toLowerCase();
   /** default true — mantém comportamento anterior (DDD ≠ local ⇒ prefixo 011). */
   return !(v === 'false' || v === '0' || v === 'no' || v === 'off');
+}
+
+function clickToCallPrependLeadingZeroForNonLocal() {
+  const v = `${process.env.INTELBRAS_CLICKTOCALL_PREPEND_ZERO ?? 'false'}`.trim().toLowerCase();
+  return v === 'true' || v === '1' || v === 'yes' || v === 'on';
 }
 
 /**
@@ -38,8 +44,12 @@ function formatBrazilDestinationForWideVoice(raw, opts = {}) {
     d = d.slice(2);
   }
 
-  /** Remove prefixo nacional 0 habitual em discagem urbana brasileira. */
+  /** Remove zeros à esquerda até o comprimento ficar ≤11 (ex.: `0719…` → `719…`). */
   while (d.startsWith('0') && d.length > 11) {
+    d = d.slice(1);
+  }
+  /** Ex.: doc WideVoice `04821060006` (**0 + DDD + fixo**) — comprimento **11**; o ``while`` acima só atua quando **>11**. */
+  if (d.startsWith('0') && d.length === 11) {
     d = d.slice(1);
   }
 
@@ -63,19 +73,32 @@ function formatBrazilDestinationForWideVoice(raw, opts = {}) {
     throw new AppError('DDD inválido.', 400, { campo: 'destino' }, true);
   }
 
+  let formatted;
   if (ddd === localDdd) {
-    return `${ddd}${subscriber}`;
+    formatted = `${ddd}${subscriber}`;
+  } else if (!use011TrunkForNonLocalDdd()) {
+    formatted = `${ddd}${subscriber}`;
+  } else {
+    formatted = `011${ddd}${subscriber}`;
   }
 
-  if (!use011TrunkForNonLocalDdd()) {
-    return `${ddd}${subscriber}`;
+  /** Só faz sentido com tronco `011` desligado; reproduz padrão `048…` da documentação. */
+  if (
+    clickToCallPrependLeadingZeroForNonLocal() &&
+    !use011TrunkForNonLocalDdd() &&
+    ddd !== localDdd
+  ) {
+    if (!formatted.startsWith('0')) {
+      formatted = `0${formatted}`;
+    }
   }
 
-  return `011${ddd}${subscriber}`;
+  return formatted;
 }
 
 module.exports = {
   onlyDigits,
   formatBrazilDestinationForWideVoice,
   use011TrunkForNonLocalDdd,
+  clickToCallPrependLeadingZeroForNonLocal,
 };
