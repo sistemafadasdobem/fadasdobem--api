@@ -9,6 +9,7 @@ const AppError = require('./AppError');
  * - **Outros DDD** → por defeito **`011`+DDD+assinante**. Com **`INTELBRAS_DIAL_USE_011_FOR_NON_LOCAL=false`**
  *   fica só `DDD+número` (**exemplo doc Intelbras**: também pode exigir **`0`+DDD+número** →
  *   **`INTELBRAS_CLICKTOCALL_PREPEND_ZERO=true`** só para chamadas onde DDD ≠ local).
+ * - Algumas centrais antigas pedem móvel **sem** o 9 inicial após o DDD (`71`+8 dígitos): **`INTELBRAS_CLICKTOCALL_DROP_MOBILE_NINE=true`**.
  */
 
 function onlyDigits(input) {
@@ -23,6 +24,11 @@ function use011TrunkForNonLocalDdd() {
 
 function clickToCallPrependLeadingZeroForNonLocal() {
   const v = `${process.env.INTELBRAS_CLICKTOCALL_PREPEND_ZERO ?? 'false'}`.trim().toLowerCase();
+  return v === 'true' || v === '1' || v === 'yes' || v === 'on';
+}
+
+function clickToCallDropMobileNineAfterDdd() {
+  const v = `${process.env.INTELBRAS_CLICKTOCALL_DROP_MOBILE_NINE ?? 'false'}`.trim().toLowerCase();
   return v === 'true' || v === '1' || v === 'yes' || v === 'on';
 }
 
@@ -63,10 +69,25 @@ function formatBrazilDestinationForWideVoice(raw, opts = {}) {
   }
 
   const ddd = d.slice(0, 2);
-  const subscriber = d.slice(2);
+  let subscriber = d.slice(2);
 
   if (subscriber.length < 8) {
     throw new AppError('Número local incompleto após DDD.', 400, { campo: 'destino' }, true);
+  }
+
+  /**
+   * Móvel BR: 9 + 8 dígitos após DDD. Troncos legados às vezes marcam com só 8 dígitos (sem o 9).
+   */
+  if (
+    clickToCallDropMobileNineAfterDdd() &&
+    subscriber.length === 9 &&
+    subscriber.startsWith('9')
+  ) {
+    subscriber = subscriber.slice(1);
+  }
+
+  if (subscriber.length < 8) {
+    throw new AppError('Número local incompleto após DDD (após regra do 9).', 400, { campo: 'destino' }, true);
   }
 
   if (!/^\d{2}$/.test(ddd)) {
@@ -101,4 +122,5 @@ module.exports = {
   formatBrazilDestinationForWideVoice,
   use011TrunkForNonLocalDdd,
   clickToCallPrependLeadingZeroForNonLocal,
+  clickToCallDropMobileNineAfterDdd,
 };

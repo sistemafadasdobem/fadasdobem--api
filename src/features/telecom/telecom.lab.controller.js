@@ -18,6 +18,7 @@ const {
 const {
   use011TrunkForNonLocalDdd,
   clickToCallPrependLeadingZeroForNonLocal,
+  clickToCallDropMobileNineAfterDdd,
 } = require('../../utils/widevoiceDialPlan.util');
 
 /** GET /api/v1/telecom/lab/ping */
@@ -64,6 +65,7 @@ const getLabDefaults = catchAsyncRoute(async (_req, res) => {
       falta_origem: !`${pair.origem || ''}`.trim(),
       falta_destino: `${pair.destino_digitos || ''}`.length < 10,
       ajuda_destino: ajudaDestino,
+      destino_variantes: pair.destino_variantes || [],
     },
     'Defaults do laboratório.',
     200
@@ -126,6 +128,7 @@ const postRunDemo = catchAsyncRoute(async (req, res) => {
     INTELBRAS_DIAL_LOCAL_DDD: `${process.env.INTELBRAS_DIAL_LOCAL_DDD || '11'}`.trim(),
     INTELBRAS_DIAL_USE_011_FOR_NON_LOCAL: use011TrunkForNonLocalDdd(),
     INTELBRAS_CLICKTOCALL_PREPEND_ZERO: clickToCallPrependLeadingZeroForNonLocal(),
+    INTELBRAS_CLICKTOCALL_DROP_MOBILE_NINE: clickToCallDropMobileNineAfterDdd(),
   });
 
   const detail = await intelbrasService.clickToCallDetailed({
@@ -163,7 +166,7 @@ const postRunDemo = catchAsyncRoute(async (req, res) => {
     destino_discado_servidor: detail.destino_enviado,
     origem_ramal: origem,
     dica_nao_tocou:
-      'CHAMADA OK só confirma a API. Se não toca: (1) `statusramais` / widevoice-check — ramal origem IDLE, não «In use» noutra chamada. (2) DDD≠local sem 011: tentar INTELBRAS_CLICKTOCALL_PREPEND_ZERO=true (ex. 0719…) como doc Intelbras. (3) Tronco 011 na central: INTELBRAS_DIAL_USE_011_FOR_NON_LOCAL=true. (4) Rota/roaming/PBX — confirmar formato `destino` com suporte Intelbras.',
+      'CHAMADA OK só confirma a API. Se não toca: (1) `statusramais` / widevoice-check — ramal origem IDLE, não «In use» noutra chamada. (2) DDD≠local sem 011: tentar INTELBRAS_CLICKTOCALL_PREPEND_ZERO=true (ex. 0719…) como doc Intelbras. (3) Tronco 011 na central: INTELBRAS_DIAL_USE_011_FOR_NON_LOCAL=true. (4) Alguns troncos marcam móvel sem o 9 após o DDD: INTELBRAS_LAB_DESTINO em E.164 «curto» (ex. 557183…) ou INTELBRAS_CLICKTOCALL_DROP_MOBILE_NINE=true com número completo. (5) Rota/roaming/PBX — confirmar formato `destino` com suporte Intelbras.',
   });
 
   return responderSucesso(

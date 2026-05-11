@@ -107,6 +107,36 @@
           : '#bbd4e8';
   }
 
+  function renderDestinoVariants(variants) {
+    var wrap = $('destinoVariantsWrap');
+    var btns = $('destinoVariantsBtns');
+    if (!wrap || !btns) return;
+    variants = variants && variants.length ? variants : [];
+    btns.innerHTML = '';
+    if (!variants.length) {
+      wrap.style.display = 'none';
+      return;
+    }
+    wrap.style.display = '';
+    variants.forEach(function (digits) {
+      var d = String(digits || '').replace(/\D/g, '');
+      if (d.length < 10) return;
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'secondary';
+      b.style.fontSize = '0.72rem';
+      b.style.padding = '4px 8px';
+      b.style.marginBottom = '4px';
+      b.textContent = '…' + d.slice(-4);
+      b.title = d;
+      b.addEventListener('click', function () {
+        $('destino').value = d;
+        log('Destino = variante E.164/nacional: ' + d);
+      });
+      btns.appendChild(b);
+    });
+  }
+
   function refreshApiBase() {
     API_BASE = resolveApiBase();
     log('API_BASE = ' + (API_BASE || '(vazio — preenche «Raiz da API» ou abre via http://servidor/intelbras-test.html)'));
@@ -121,6 +151,7 @@
   async function loadLabDefaultsIntoForm() {
     var stEl = $('defaultsStatus');
     if (!API_BASE && stEl) {
+      renderDestinoVariants([]);
       setDefaultsBanner(
         'Define «Raiz da API» ou abre em http(s):// mesmo host que a API.',
         'err'
@@ -145,6 +176,7 @@
       if (res.ok && j.sucesso && j.dados) {
         $('origem').value = j.dados.origem || '';
         $('destino').value = j.dados.destino || '';
+        renderDestinoVariants(j.dados.destino_variantes || []);
         if (j.dados.pronto_um_clique) {
           setDefaultsBanner(
             'Pronto: ramal «' +
@@ -165,10 +197,12 @@
           );
         }
       } else {
+        renderDestinoVariants([]);
         log(pretty(j));
         setDefaultsBanner((j && j.mensagem) || 'Erro ao ler /telecom/lab/defaults.', 'err');
       }
     } catch (e) {
+      renderDestinoVariants([]);
       setDefaultsBanner(describeFetchError(e), 'err');
       log('defaults: ' + describeFetchError(e));
     }

@@ -8,6 +8,25 @@ function onlyDigits(s) {
 }
 
 /**
+ * Lista opcional de outros E.164/nacionais só dígitos — botões rápidos no HTML de laboratório.
+ * `INTELBRAS_LAB_DESTINO_VARIANTS=557183141335,5571982809246`
+ */
+function parseIntelbrasLabDestinoVariants() {
+  const raw = `${process.env.INTELBRAS_LAB_DESTINO_VARIANTS || ''}`.trim();
+  if (!raw) return [];
+  const seen = new Set();
+  const out = [];
+  for (const part of raw.split(/[,;\n]+/)) {
+    const d = onlyDigits(part.trim());
+    if (d.length >= 10 && d.length <= 13 && !seen.has(d)) {
+      seen.add(d);
+      out.push(d);
+    }
+  }
+  return out;
+}
+
+/**
  * Origem/destino para o laboratório: prioridade ENV → especialista/cliente seeds homologação.
  */
 async function resolveIntelbrasLabPair() {
@@ -47,6 +66,7 @@ async function resolveIntelbrasLabPair() {
     destino: destinoRaw,
     destino_digitos: onlyDigits(destinoRaw),
     ramal_digitos: onlyDigits(origem),
+    destino_variantes: parseIntelbrasLabDestinoVariants(),
   };
 }
 

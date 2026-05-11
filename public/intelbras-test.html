@@ -201,6 +201,10 @@
     <input type="text" id="origem" placeholder="Ramal ex.: 0559" autocomplete="off" />
     <label>Destino — telefone cliente (<code>destino</code>)</label>
     <input type="text" id="destino" placeholder="11999887766 ou 4899887766 ou +55 48 98877-6655" autocomplete="off" />
+    <p id="destinoVariantsWrap" class="hint" style="margin-top: 4px; display: none">
+      Variantes (env <code>INTELBRAS_LAB_DESTINO_VARIANTS</code>):
+      <span id="destinoVariantsBtns" style="display: inline-flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; vertical-align: middle"></span>
+    </p>
     <button type="button" id="btnCall">Iniciar chamada (clicktocall)</button>
     <button type="button" class="warn" id="btnRelease">Liberar ramal</button>
     <button type="button" class="secondary" id="btnStatus">Consultar status ramais (statusramais)</button>
