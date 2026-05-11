@@ -40,6 +40,12 @@ const getWidevoicePublicCheck = catchAsyncRoute(async (_req, res) => {
       0,
       520
     );
+  } else if (out.ok && out.body_sem_conteudo) {
+    mensagem =
+      'WideVoice devolveu HTTP 200 mas sem corpo JSON útil — ver widevoice_transport, hint_pt e se a api.php/resposta estão bloqueadas por proxy.';
+  } else if (out.ok && out.payload_nao_json) {
+    mensagem =
+      'WideVoice não devolveu JSON (HTML ou texto) — ver widevoice_raw.corpo_primeiros_chars e hint_pt.';
   } else if (out.ok && out.ramal_snapshot_present) {
     mensagem = 'WideVoice aceitou statusramais (credencial/IP de saída deste servidor válidos para a central).';
   } else if (out.ok && out.central_auth_problem) {

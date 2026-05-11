@@ -104,10 +104,46 @@ function flattenWideVoiceResponse(data) {
   if (Array.isArray(data)) {
     return tupleArrayToPairs(data);
   }
-  if (data && typeof data === 'object') {
+  if (typeof data === 'string') {
+    return { texto_literal: data };
+  }
+  if (data !== null && data !== undefined && typeof data === 'object') {
     return data;
   }
   return {};
+}
+
+/**
+ * A central às vezes devolve BOM, HTML de gateway ou corpo vazio; o axios com JSON default
+ * devolve `data` inexploável. Aqui garantimos sempre texto → parse opcional → diagnóstico.
+ */
+function parseWideVoiceBodyText(rawText) {
+  const text = `${rawText ?? ''}`;
+  const trimmed = text.replace(/^\ufeff/, '').trim();
+  if (!trimmed.length) {
+    return { parsed: null, body_effectively_empty_after_trim: true };
+  }
+  try {
+    const parsed = JSON.parse(trimmed);
+    return { parsed, body_effectively_empty_after_trim: false };
+  } catch {
+    const looksHtml =
+      /^<!doctype|^<html|^<\?xml/i.test(trimmed) || /<body[\s>]|<head[\s>]/i.test(trimmed);
+    const parsedObj = looksHtml
+      ? {
+          __widevoice_payload_nao_json: true,
+          __forma: 'provavelmente_html_gateway',
+          corpo_primeiros_chars: trimmed.slice(0, 340),
+          corpo_tamanho: trimmed.length,
+        }
+      : {
+          __widevoice_payload_nao_json: true,
+          __forma: 'texto_nao_json',
+          corpo_primeiros_chars: trimmed.slice(0, 340),
+          corpo_tamanho: trimmed.length,
+        };
+    return { parsed: parsedObj, body_effectively_empty_after_trim: false };
+  }
 }
 
 function isTupleSuccess(map) {
@@ -148,8 +184,53 @@ function peekWideVoiceConfig() {
   };
 }
 
-/** @returns {{ probe: string, central_status_message: string|null, central_auth_problem: boolean, ramal_snapshot_present: boolean, hint_pt: string }} */
-function interpretStatusRamaisProbe(httpStatus, raw, flat) {
+/**
+ * @param {{ body_length?: number, content_type?: string|null }} [transport]
+ * @returns {{ probe: string, central_status_message: string|null, central_auth_problem: boolean, ramal_snapshot_present: boolean, hint_pt: string, body_sem_conteudo?: boolean, payload_nao_json?: boolean }}
+ */
+function interpretStatusRamaisProbe(httpStatus, raw, flat, transport = {}) {
+  const len =
+    typeof transport.body_length === 'number'
+      ? transport.body_length
+      : Number(transport.body_length) || 0;
+  const ctLow = `${transport.content_type ?? ''}`.trim().toLowerCase();
+  const bodyEmptyMarked = Boolean(transport.body_effectively_empty_after_trim);
+
+  if (
+    httpStatus >= 200 &&
+    httpStatus < 300 &&
+    (raw === null || raw === undefined) &&
+    (bodyEmptyMarked || len === 0)
+  ) {
+    return {
+      probe: 'statusramais',
+      central_status_message: null,
+      central_auth_problem: false,
+      ramal_snapshot_present: false,
+      body_sem_conteudo: true,
+      hint_pt:
+        'HTTP 200 com corpo vazio: confirme a URL (/api.php), proxy/WAF na frente do host Intelbras ou se o método statusramais está activo na sua instância.',
+    };
+  }
+
+  const nonJsonEnvelope =
+    raw &&
+    typeof raw === 'object' &&
+    '__widevoice_payload_nao_json' in raw &&
+    raw.__widevoice_payload_nao_json === true;
+
+  if (nonJsonEnvelope && raw.__forma === 'provavelmente_html_gateway') {
+    return {
+      probe: 'statusramais',
+      central_status_message: null,
+      central_auth_problem: false,
+      ramal_snapshot_present: false,
+      payload_nao_json: true,
+      hint_pt:
+        'Chegou HTML (gateway, login web ou erro PHP) em vez do JSON esperado pela api.php — ver campo corpo_primeiros_chars em dados.widevoice_raw.',
+    };
+  }
+
   const central =
     `${flat?.Status ?? flat?.status ?? ''}`.trim() ||
     (Array.isArray(raw) && raw.length >= 2 ? `${raw[1]}` : '').trim() ||
@@ -159,7 +240,8 @@ function interpretStatusRamaisProbe(httpStatus, raw, flat) {
     .toLowerCase()
     .replace(/\\/g, '');
 
-  const loginAuthFail = /login.*senha|senha.*invalid|invalido/.test(bundle) || /erro de protocolo/.test(bundle);
+  const loginAuthFail =
+    /login.*senha|senha.*invalid|invalido/.test(bundle) || /erro de protocolo/.test(bundle);
 
   /** Sucesso esperado na doc: array de objetos com campo Ramal */
   const looksLikeRamalRows =
@@ -169,22 +251,38 @@ function interpretStatusRamaisProbe(httpStatus, raw, flat) {
     raw[0] !== null &&
     ('Ramal' in raw[0] || 'ramal' in raw[0]);
 
+  const hintNonJsonFallback =
+    nonJsonEnvelope && raw.__forma === 'texto_nao_json'
+      ? 'A central devolveu texto que não parseia como JSON (ver pré-visualização em widevoice_raw.corpo_primeiros_chars).'
+      : null;
+
   const hint =
     loginAuthFail
       ? 'Intelbras agrupa falha neste erro: revise token/login com o suporte e confirme o IP de egresso onde corre esta API está cadastrado na instância.'
-      : looksLikeRamalRows
-        ? 'Resposta típica de statusramais: credencial e IP provavelmente corretos para esta chamada.'
-        : httpStatus < 200 || httpStatus >= 300
-          ? 'HTTP não-OK recebido do host WideVoice.'
-          : 'Interpretação ambígua — inspecionar widevoice_raw.';
+      : hintNonJsonFallback
+        ? hintNonJsonFallback
+        : looksLikeRamalRows
+          ? 'Resposta típica de statusramais: credencial e IP provavelmente corretos para esta chamada.'
+          : httpStatus < 200 || httpStatus >= 300
+            ? 'HTTP não-OK recebido do host WideVoice.'
+            : ctLow.includes('text/html') &&
+                !(Array.isArray(raw) || (raw && typeof raw === 'object' && '__widevoice_payload_nao_json' in raw))
+              ? 'Content-Type sugere HTML; verificar redireccionamento HTTPS ou chamada interceptada antes da api.php.'
+              : flat && typeof flat.texto_literal === 'string'
+                ? 'Resposta primitive JSON string — cenário incomum WideVoice.'
+                : 'Interpretação ambígua — inspecionar widevoice_raw e transporte HTTP.';
 
-  return {
+  const out = {
     probe: 'statusramais',
     central_status_message: central || null,
     central_auth_problem: Boolean(loginAuthFail),
     ramal_snapshot_present: Boolean(looksLikeRamalRows),
     hint_pt: hint,
   };
+  if (nonJsonEnvelope && raw.__forma === 'texto_nao_json') {
+    out.payload_nao_json = true;
+  }
+  return out;
 }
 
 /**
@@ -217,10 +315,15 @@ async function probeWideVoiceFromEnv() {
   let status;
   let raw;
   let flat;
+  /** @type {{ body_length: number; content_type: string|null; body_effectively_empty_after_trim?: boolean }} */
+  let transport = {};
 
   try {
     const r = await statusRamais({});
     ({ status, raw, flat } = r);
+    if (typeof r._transport === 'object' && r._transport !== null) {
+      transport = r._transport;
+    }
   } catch (e) {
     return {
       ok: false,
@@ -232,7 +335,7 @@ async function probeWideVoiceFromEnv() {
     };
   }
 
-  const interpretation = interpretStatusRamaisProbe(status, raw, flat);
+  const interpretation = interpretStatusRamaisProbe(status, raw, flat, transport);
 
   return {
     ok: true,
@@ -241,6 +344,7 @@ async function probeWideVoiceFromEnv() {
     widevoice_ok: interpretation.ramal_snapshot_present && !interpretation.central_auth_problem,
     widevoice_raw: raw,
     widevoice_flat: flat,
+    widevoice_transport: transport,
     ...interpretation,
   };
 }
@@ -260,10 +364,23 @@ async function wideVoiceAction(acao, extra = {}) {
     ...extra,
   };
 
-  const { data, status } = await client.post(apiPath, body);
-  const flat = flattenWideVoiceResponse(data);
+  const res = await client.post(apiPath, body, {
+    responseType: 'text',
+    transformResponse: [(d) => d],
+  });
 
-  return { status, raw: data, flat };
+  const textBuffer = res.data == null ? '' : String(res.data);
+  const { parsed, body_effectively_empty_after_trim } = parseWideVoiceBodyText(textBuffer);
+  const flat = flattenWideVoiceResponse(parsed);
+
+  /** @type {{ body_length: number; content_type: string|null; body_effectively_empty_after_trim: boolean }} */
+  const _transport = {
+    body_length: Buffer.byteLength(textBuffer, 'utf8'),
+    content_type: res.headers?.['content-type'] ? String(res.headers['content-type']) : null,
+    body_effectively_empty_after_trim: Boolean(body_effectively_empty_after_trim),
+  };
+
+  return { status: res.status, raw: parsed, flat, _transport };
 }
 
 /**
