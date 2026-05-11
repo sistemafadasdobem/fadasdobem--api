@@ -40,6 +40,38 @@ function clickToCallPrependRouteDigits() {
 }
 
 /**
+ * Destino já colado com código de rota (ex.: `01571983141335`) — extrai nacional se bater com PREPEND_ROUTE.
+ * Rejeita `0150719…` (0 extra após o 015).
+ */
+function maybePeelConfiguredRoutePrefixFromFullDial(d) {
+  const routePre = clickToCallPrependRouteDigits();
+  if (!routePre || !d.startsWith(routePre)) {
+    return d;
+  }
+  if (d.length <= routePre.length + 9) {
+    return d;
+  }
+  const national = d.slice(routePre.length);
+  if (national.length >= 10 && national.length <= 11) {
+    if (national.startsWith('0')) {
+      throw new AppError(
+        'Após o prefixo de rota (ex. 015), use DDD+número direto — sem 0 extra antes do DDD. Certo: 01571983141335. Errado: 01507183141335.',
+        400,
+        { campo: 'destino', exemplo_ok: `${routePre}<DDD><assinante>` },
+        true
+      );
+    }
+    return national;
+  }
+  throw new AppError(
+    'Após o código de rota devem seguir 10 ou 11 dígitos (DDD + assinante). Em E.164 use só «55» + DDD + número (ex. 5571983141335), não «55» junto ao código tipo 015 antes do nacional.',
+    400,
+    { campo: 'destino', prefixo_rota_visto: routePre, digitos_apos_prefixo: national.length },
+    true
+  );
+}
+
+/**
  * Normaliza e formata o destino para o campo `destino` do `clicktocall`.
  *
  * @param {string} raw — E.164 (`5511999999999`), nacional com DDD, ou misto.
@@ -56,6 +88,8 @@ function formatBrazilDestinationForWideVoice(raw, opts = {}) {
   if (d.startsWith('55') && d.length > 11) {
     d = d.slice(2);
   }
+
+  d = maybePeelConfiguredRoutePrefixFromFullDial(d);
 
   /** Remove zeros à esquerda até o comprimento ficar ≤11 (ex.: `0719…` → `719…`). */
   while (d.startsWith('0') && d.length > 11) {
