@@ -3,13 +3,21 @@
 const AppError = require('./AppError');
 
 /**
- * Regra de negócio (Intelbras WideVoice / PBX São Paulo): **DDD 11 em formato local**
- * (sem prefixo trunk `011`), **demais DDD com prefixo `011`** antes do código de área quando
- * originados a partir da central configurada conforme briefing operacional Nice.
+ * Discagem BR para WideVoice (`destino` em `clicktocall`).
+ *
+ * - **DDD “local”** (`INTELBRAS_DIAL_LOCAL_DDD`, default **11**) → só `DDD+assinante`, sem `011`.
+ * - **Outros DDD** → por defeito **`011`+DDD+assinante**. Se a central **não** usa esse tronco
+ *   (ex.: apenas nacional **71**98314…), defina **`INTELBRAS_DIAL_USE_011_FOR_NON_LOCAL=false`**.
  */
 
 function onlyDigits(input) {
   return `${input ?? ''}`.replace(/\D/g, '');
+}
+
+function use011TrunkForNonLocalDdd() {
+  const v = `${process.env.INTELBRAS_DIAL_USE_011_FOR_NON_LOCAL ?? 'true'}`.trim().toLowerCase();
+  /** default true — mantém comportamento anterior (DDD ≠ local ⇒ prefixo 011). */
+  return !(v === 'false' || v === '0' || v === 'no' || v === 'off');
 }
 
 /**
@@ -59,10 +67,15 @@ function formatBrazilDestinationForWideVoice(raw, opts = {}) {
     return `${ddd}${subscriber}`;
   }
 
+  if (!use011TrunkForNonLocalDdd()) {
+    return `${ddd}${subscriber}`;
+  }
+
   return `011${ddd}${subscriber}`;
 }
 
 module.exports = {
   onlyDigits,
   formatBrazilDestinationForWideVoice,
+  use011TrunkForNonLocalDdd,
 };

@@ -15,6 +15,7 @@ const {
   pairIsReady,
   onlyDigits,
 } = require('./telecom.lab.defaults.helper');
+const { use011TrunkForNonLocalDdd } = require('../../utils/widevoiceDialPlan.util');
 
 /** GET /api/v1/telecom/lab/ping */
 const pingLab = catchAsyncRoute(async (_req, res) => {
@@ -118,6 +119,7 @@ const postRunDemo = catchAsyncRoute(async (req, res) => {
     digitos_destino_informados: onlyDigits(destino).length,
     aplicar_intelbrasDDD: Boolean(formatDestino),
     INTELBRAS_DIAL_LOCAL_DDD: `${process.env.INTELBRAS_DIAL_LOCAL_DDD || '11'}`.trim(),
+    INTELBRAS_DIAL_USE_011_FOR_NON_LOCAL: use011TrunkForNonLocalDdd(),
   });
 
   const detail = await intelbrasService.clickToCallDetailed({
