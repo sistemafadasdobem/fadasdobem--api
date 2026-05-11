@@ -49,6 +49,13 @@
     button:disabled { opacity: 0.45; cursor: not-allowed; }
     button.secondary { background: #2a3441; color: #e7ecf1; }
     button.warn { background: var(--warn); color: #1a1204; }
+    button.btn-mega {
+      font-size: 1.05rem;
+      padding: 14px 22px;
+      width: 100%;
+      max-width: 460px;
+      display: inline-block;
+    }
     #log {
       font-family: ui-monospace, monospace;
       font-size: 12px;
@@ -115,6 +122,17 @@
     }
     .hint { font-size: 0.75rem; color: #7d8a93; margin-top: 6px; }
     .pill { font-size: 0.72rem; padding: 2px 8px; border-radius: 999px; background: #1e2936; display: inline-block; }
+    #fileWarning {
+      display: none;
+      padding: 12px 14px;
+      margin-bottom: 14px;
+      border-radius: 8px;
+      border: 1px solid #b45309;
+      background: rgba(180, 83, 9, 0.15);
+      color: #fdba74;
+      font-size: 0.85rem;
+      line-height: 1.5;
+    }
     #labStatus {
       margin-top: 8px;
       padding: 8px 10px;
@@ -138,10 +156,31 @@
     <span class="pill">Vídeo em produção costuma vir do softphone/WebRTC da central</span>, não deste HTML — aqui validas a API (CHAMADA OK / ID).
   </p>
 
+  <div id="fileWarning" role="alert">
+    <strong>Abriste o ficheiro em <code>file://</code>.</strong> Os botões não conseguem falar com a API.
+    Corre a API (<code>npm start</code>) e abre no browser:
+    <code>http://localhost:3000/intelbras-test.html</code> (ajusta porta no <code>.env</code>)
+    ou preenche abaixo a raiz <code>http://localhost:PORTA</code> e «Guardar».
+  </div>
+
+  <fieldset style="border-color: #22543d; background: #0d1f14">
+    <legend style="color: #86efac">Fluxo rápido — já vem configurado pela BD (.env / seed)</legend>
+    <p class="hint" style="color: #bbf7d0">
+      Na pasta da API:<br/>
+      <strong>1)</strong> <code>npm run seed:homolog</code> — grava <code>intelbras_ramal</code> na taróloga + telefone no utilizador cliente (default <code>11999887766</code> —
+      substitui no <code>.env</code> por <code>INTELBRAS_LAB_DESTINO</code> ou <code>SEED_HOMOLOG_CLIENT_PHONE</code>).<br/>
+      <strong>2)</strong> <code>npm start</code> — abre esta página em <code>http://localhost:PORTA/intelbras-test.html</code>.<br/>
+      <strong>3)</strong> Um clique em «Demo». O servidor dispara WideVoice (<code>/lab/run-demo</code>).
+    </p>
+    <button type="button" class="btn-mega" id="btnDemoOneClick">▶ Demo em 1 clique · WideVoice (clicktocall)</button>
+    <p id="defaultsStatus" class="hint">A perguntar à API valores de ramal/telemóvel…</p>
+    <button type="button" class="secondary" id="btnReloadDefaults">↻ Trazer outra vez ramal/telemóvel da BD</button>
+  </fieldset>
+
   <fieldset>
     <legend>Servidor &amp; laboratório</legend>
-    <label>Raiz da API (vazio = mesma origem da página)</label>
-    <input type="text" id="apiRoot" placeholder="https://homolog.example.com" autocomplete="off" />
+    <label>Raiz da API (servidor só — ex.: <code>http://localhost:3000</code>; vazio se já estás em /intelbras-test.html no mesmo host)</label>
+    <input type="text" id="apiRoot" placeholder="http://localhost:3000" autocomplete="off" />
     <label>Segredo do laboratório (<code>x-telecom-lab-secret</code>) — se definido no <code>.env</code></label>
     <input type="password" id="labSecret" placeholder="INTELBRAS_TELECOM_LAB_SECRET (opcional)" autocomplete="off" />
     <p class="hint">O segredo pode ser gravado ao clicar «Guardar» (apenas neste navegador / sessionStorage).</p>
@@ -152,10 +191,16 @@
 
   <fieldset>
     <legend>Click-to-call (vídeo/voz pela central)</legend>
-    <label>Origem — ramal / ID da taróloga na central (<code>origem</code>)</label>
-    <input type="text" id="origem" placeholder="ex.: 2002" autocomplete="off" />
-    <label>Destino — telefone cliente (com DDD; E.164 ou nacional — o servidor aplica DDD 11 vs 011)</label>
-    <input type="text" id="destino" placeholder="ex.: 5511999887766 ou 11999887766" autocomplete="off" />
+    <p class="hint">
+      <strong>Origem</strong> = número de <strong>ramal</strong> da taróloga na PABX WideVoice (não é o UUID na BD da app).
+      Vem da Intelbras ou do painel do ramal (ex.: <code>2002</code>).
+      <strong>Destino</strong> = telefone do cliente com DDD (<code>11999887766</code>, <code>5511999887766</code> ou formato com espaços/travessões —
+      o servidor usa só dígitos e aplica DDD local 11 vs prefixo <code>011</code> para outros DDD).
+    </p>
+    <label>Origem — ramal na central WideVoice (<code>origem</code>)</label>
+    <input type="text" id="origem" placeholder="Ramal ex.: 2002" autocomplete="off" />
+    <label>Destino — telefone cliente (<code>destino</code>)</label>
+    <input type="text" id="destino" placeholder="11999887766 ou 4899887766 ou +55 48 98877-6655" autocomplete="off" />
     <button type="button" id="btnCall">Iniciar chamada (clicktocall)</button>
     <button type="button" class="warn" id="btnRelease">Liberar ramal</button>
     <button type="button" class="secondary" id="btnStatus">Consultar status ramais (statusramais)</button>
@@ -189,251 +234,7 @@
   <h2>Log (estilo consola)</h2>
   <div id="log"></div>
 
-  <script>
-    (function () {
-      var STORAGE_API = 'intelbrasTestApiRoot';
-      var STORAGE_SECRET = 'intelbrasTestLabSecret';
-      var API_BASE = '';
-      var logEl = document.getElementById('log');
-      var localStream = null;
-
-      function parseApiRootInput(raw) {
-        var s = String(raw || '').trim().replace(/\/$/, '');
-        if (!s) return '';
-        if (/\/api\/v1$/i.test(s)) return s.slice(0, -'/api/v1'.length);
-        return s;
-      }
-
-      function normalizeToApiV1(root) {
-        root = String(root || '').trim().replace(/\/$/, '');
-        if (!root) return '';
-        if (/\/api\/v1$/i.test(root)) return root;
-        return root + '/api/v1';
-      }
-
-      function resolveApiBase() {
-        var params = new URLSearchParams(window.location.search || '');
-        var fromQuery = parseApiRootInput(params.get('api') || params.get('apiBase') || '');
-        if (fromQuery) return normalizeToApiV1(fromQuery);
-
-        var fromInput = parseApiRootInput(document.getElementById('apiRoot').value);
-        if (fromInput) return normalizeToApiV1(fromInput);
-
-        try {
-          var stored = sessionStorage.getItem(STORAGE_API);
-          if (stored) return normalizeToApiV1(parseApiRootInput(stored));
-        } catch (e) {}
-
-        if (window.location.protocol === 'file:') return '';
-
-        var o = window.location.origin;
-        if (o && o !== 'null' && (window.location.protocol === 'http:' || window.location.protocol === 'https:')) {
-          return normalizeToApiV1(o);
-        }
-        return '';
-      }
-
-      function apiUrl(subPath) {
-        var p = subPath.startsWith('/') ? subPath : '/' + subPath;
-        return API_BASE + p;
-      }
-
-      function log(msg) {
-        var t = new Date().toISOString().slice(11, 23);
-        logEl.textContent += '[' + t + '] ' + msg + '\n';
-        logEl.scrollTop = logEl.scrollHeight;
-        console.log('[intelbras-test]', msg);
-      }
-
-      function labHeaders() {
-        var h = { Accept: 'application/json' };
-        var sec = document.getElementById('labSecret').value.trim();
-        if (sec) h['x-telecom-lab-secret'] = sec;
-        return h;
-      }
-
-      function describeFetchError(err) {
-        var m = (err && err.message) || String(err);
-        if (/Failed to fetch|NetworkError|Load failed/i.test(m)) {
-          return (
-            m +
-            ' — CORS/rede ou URL. Usa a página no mesmo domínio da API ou ?api=https://host:porta'
-          );
-        }
-        return m;
-      }
-
-      function pretty(obj) {
-        try {
-          return JSON.stringify(obj, null, 2);
-        } catch (e) {
-          return String(obj);
-        }
-      }
-
-      function setLabStatus(text, kind) {
-        var el = document.getElementById('labStatus');
-        el.textContent = text;
-        el.className = kind === 'ok' ? 'ok' : kind === 'err' ? 'err' : '';
-      }
-
-      async function refreshApiBase() {
-        API_BASE = resolveApiBase();
-        log('API_BASE = ' + (API_BASE || '(vazio — configura a raiz da API)'));
-        return API_BASE;
-      }
-
-      async function fetchJson(method, path, body) {
-        var url = apiUrl(path);
-        var opts = {
-          method: method,
-          headers: Object.assign({}, labHeaders(), { 'Content-Type': 'application/json' }),
-          credentials: 'omit',
-          mode: 'cors',
-        };
-        if (body !== undefined) opts.body = JSON.stringify(body);
-        var res = await fetch(url, opts);
-        var json = null;
-        try {
-          json = await res.json();
-        } catch (e) {
-          json = { _parseError: 'Resposta não-JSON', status: res.status };
-        }
-        return { res: res, json: json };
-      }
-
-      document.getElementById('hintUrl').textContent =
-        window.location.origin && window.location.protocol !== 'file:'
-          ? window.location.origin + '/intelbras-test.html'
-          : '/intelbras-test.html (servido pelo Express)';
-
-      try {
-        var s = sessionStorage.getItem(STORAGE_API);
-        if (s) document.getElementById('apiRoot').value = s;
-        var sc = sessionStorage.getItem(STORAGE_SECRET);
-        if (sc) document.getElementById('labSecret').value = sc;
-      } catch (e) {}
-
-      document.getElementById('btnSaveConfig').addEventListener('click', function () {
-        try {
-          sessionStorage.setItem(STORAGE_API, document.getElementById('apiRoot').value.trim());
-          sessionStorage.setItem(STORAGE_SECRET, document.getElementById('labSecret').value);
-        } catch (e) {
-          log('sessionStorage falhou: ' + e);
-        }
-        refreshApiBase();
-        log('Config guardada no navegador.');
-      });
-
-      document.getElementById('btnPingLab').addEventListener('click', async function () {
-        await refreshApiBase();
-        if (!API_BASE) {
-          setLabStatus('Define a raiz da API.', 'err');
-          return;
-        }
-        try {
-          log('GET ' + apiUrl('/telecom/lab/ping'));
-          var r = await fetch(apiUrl('/telecom/lab/ping'), {
-            method: 'GET',
-            headers: labHeaders(),
-            credentials: 'omit',
-            mode: 'cors',
-          });
-          var j = await r.json().catch(function () { return {}; });
-          log('HTTP ' + r.status + '\n' + pretty(j));
-          if (r.ok && j.sucesso) setLabStatus('Laboratório ativo — WideVoice base: ' + (j.dados && j.dados.widevoice_base_preview || 'ok'), 'ok');
-          else setLabStatus('Falha ping: HTTP ' + r.status + ' — ' + (j.mensagem || ''), 'err');
-        } catch (e) {
-          setLabStatus(describeFetchError(e), 'err');
-          log('ERRO: ' + describeFetchError(e));
-        }
-      });
-
-      document.getElementById('btnCall').addEventListener('click', async function () {
-        await refreshApiBase();
-        if (!API_BASE) {
-          log('ERRO: API_BASE vazio.');
-          return;
-        }
-        var origem = document.getElementById('origem').value.trim();
-        var destino = document.getElementById('destino').value.trim();
-        if (!origem || !destino) {
-          log('ERRO: preenche origem e destino.');
-          return;
-        }
-        try {
-          log('POST /telecom/lab/clicktocall ' + pretty({ origem: origem, destino: destino }));
-          var pack = await fetchJson('POST', '/telecom/lab/clicktocall', { origem: origem, destino: destino });
-          log('HTTP ' + pack.res.status + '\n' + pretty(pack.json));
-          if (pack.json && pack.json.sucesso && pack.json.dados) {
-            var id = pack.json.dados.call_id;
-            if (id) log('>>> ID chamada (central): ' + id);
-            var flat = pack.json.dados.widevoice_flat;
-            if (flat && flat.Status) log('>>> Status tuple: ' + flat.Status);
-          }
-        } catch (e) {
-          log('ERRO: ' + describeFetchError(e));
-        }
-      });
-
-      document.getElementById('btnRelease').addEventListener('click', async function () {
-        await refreshApiBase();
-        var ramal = document.getElementById('origem').value.trim();
-        if (!ramal) {
-          log('ERRO: preenche origem (ramal).');
-          return;
-        }
-        try {
-          log('POST /telecom/lab/liberarramal ' + pretty({ ramal: ramal }));
-          var pack = await fetchJson('POST', '/telecom/lab/liberarramal', { ramal: ramal });
-          log('HTTP ' + pack.res.status + '\n' + pretty(pack.json));
-        } catch (e) {
-          log('ERRO: ' + describeFetchError(e));
-        }
-      });
-
-      document.getElementById('btnStatus').addEventListener('click', async function () {
-        await refreshApiBase();
-        try {
-          log('POST /telecom/lab/statusramais {}');
-          var pack = await fetchJson('POST', '/telecom/lab/statusramais', {});
-          log('HTTP ' + pack.res.status + '\n' + pretty(pack.json));
-        } catch (e) {
-          log('ERRO: ' + describeFetchError(e));
-        }
-      });
-
-      document.getElementById('btnCam').addEventListener('click', async function () {
-        var vid = document.getElementById('vidLocal');
-        var ph = document.getElementById('phLocal');
-        try {
-          localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-          vid.srcObject = localStream;
-          vid.style.display = 'block';
-          ph.style.display = 'none';
-          await vid.play().catch(function () {});
-          log('Câmara local ligada (só para teste visual).');
-        } catch (e) {
-          log('Câmara: ' + ((e && e.message) || e));
-        }
-      });
-
-      document.getElementById('btnCamStop').addEventListener('click', function () {
-        var vid = document.getElementById('vidLocal');
-        var ph = document.getElementById('phLocal');
-        if (localStream) {
-          localStream.getTracks().forEach(function (t) { t.stop(); });
-          localStream = null;
-        }
-        vid.srcObject = null;
-        vid.style.display = 'none';
-        ph.style.display = 'flex';
-        log('Câmara local parada.');
-      });
-
-      refreshApiBase();
-      log('Página pronta. 1) Ativa INTELBRAS_TELECOM_LAB_ENABLED no servidor. 2) Ping laboratório. 3) Iniciar chamada.');
-    })();
-  </script>
+  <!-- Script externo: Helmet CSP bloqueia <script> inline nesta página. -->
+  <script src="/intelbras-test.js" defer></script>
 </body>
 </html>

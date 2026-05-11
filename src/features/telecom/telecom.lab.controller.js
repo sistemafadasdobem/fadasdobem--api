@@ -4,6 +4,11 @@ const AppError = require('../../utils/AppError');
 const { responderSucesso } = require('../../utils/response.util');
 const { catchAsyncRoute } = require('../../utils/catchAsync.util');
 const intelbrasService = require('../../providers/intelbras/intelbras.service');
+const {
+  resolveIntelbrasLabPair,
+  pairIsReady,
+  onlyDigits,
+} = require('./telecom.lab.defaults.helper');
 
 /** GET /api/v1/telecom/lab/ping */
 const pingLab = catchAsyncRoute(async (_req, res) => {
@@ -19,6 +24,124 @@ const pingLab = catchAsyncRoute(async (_req, res) => {
       api_path: intelbrasService.getApiPath(),
     },
     'Laboratório WideVoice ativo.',
+    200
+  );
+});
+
+/** GET /api/v1/telecom/lab/defaults — dados para pré-preencher o HTML (homologação). */
+const getLabDefaults = catchAsyncRoute(async (_req, res) => {
+  const pair = await resolveIntelbrasLabPair();
+  const masked =
+    `${pair.destino_digitos || ''}`.length > 6
+      ? `••••${String(pair.destino_digitos || '').slice(-4)}`
+      : '';
+
+  const ajudaDestino =
+    `${pair.destino_digitos || ''}`.length < 10
+      ? `Defina no .env INTELBRAS_LAB_DESTINO=DDI+DDD+NÚMERO (ex. 5511999887766) ou SEED_HOMOLOG_CLIENT_PHONE e rode npm run seed:homolog`
+      : null;
+
+  return responderSucesso(
+    res,
+    {
+      origem: pair.origem || '',
+      destino: pair.destino || '',
+      destino_digitos: pair.destino_digitos || '',
+      destino_preview: masked,
+      pronto_um_clique: pairIsReady(pair),
+      falta_origem: !`${pair.origem || ''}`.trim(),
+      falta_destino: `${pair.destino_digitos || ''}`.length < 10,
+      ajuda_destino: ajudaDestino,
+    },
+    'Defaults do laboratório.',
+    200
+  );
+});
+
+/**
+ * POST /api/v1/telecom/lab/run-demo — um pedido que valida configs e dispara clicktocall (homologação).
+ * Body opcional: { origem?, destino? } sobrepõem defaults só nesta chamada.
+ */
+const postRunDemo = catchAsyncRoute(async (req, res) => {
+  let origem =
+    `${req.body?.origem ?? req.body?.origin ?? ''}`.trim();
+  let destino = `${req.body?.destino ?? req.body?.destination ?? ''}`.trim();
+  const formatDestino =
+    req.body?.format_destino !== false &&
+    req.body?.formatDestino !== false &&
+    req.body?.skip_format !== true;
+
+  const inferred = await resolveIntelbrasLabPair();
+  if (!origem) origem = inferred.origem;
+  if (!destino) destino = inferred.destino;
+
+  if (!`${origem || ''}`.trim()) {
+    throw new AppError(
+      'Ramal ausente para demo. Rode `npm run seed:homolog` (preenche `intelbras_ramal`) ou INTELBRAS_LAB_ORIGEM_RAMAL no .env.',
+      422,
+      {
+        especialista_intelbras_hint: inferred.origem ? null : 'sem ramal na BD — ver seed/env',
+      },
+      true
+    );
+  }
+
+  const dLen = onlyDigits(destino).length;
+  if (!destino || dLen < 10) {
+    throw new AppError(
+      'Telefone destino incompleto. Defina INTELBRAS_LAB_DESTINO ou SEED_HOMOLOG_CLIENT_PHONE (+ seed) até ter ≥10 dígitos.',
+      422,
+      { digitos_lidos: dLen },
+      true
+    );
+  }
+
+  const wideCfg = `${intelbrasService.getBaseOrigin() || ''}`.trim();
+  if (!wideCfg) {
+    throw new AppError(
+      'WideVoice não configurada (INTELBRAS_WIDEVOICE_BASE_URL / credenciais).',
+      503,
+      null,
+      true
+    );
+  }
+
+  const detail = await intelbrasService.clickToCallDetailed({
+    origem,
+    destino,
+    formatDestino,
+  });
+
+  if (!detail.success) {
+    const msg =
+      `${detail.widevoice_flat?.Mensagem ||
+        detail.widevoice_flat?.mensagem ||
+        detail.widevoice_flat?.Status ||
+        detail.widevoice_flat?.status ||
+        'Resposta WideVoice não reconhecida como sucesso.'}`.trim() || 'Falha clicktocall.';
+    throw new AppError(msg, detail.http_status >= 400 && detail.http_status < 600 ? detail.http_status : 502, {
+      demo: true,
+      origem_usada: origem,
+      destino_enviado: detail.destino_enviado,
+      widevoice_raw: detail.widevoice_raw,
+      widevoice_flat: detail.widevoice_flat,
+      http_status: detail.http_status,
+    }, true);
+  }
+
+  return responderSucesso(
+    res,
+    {
+      demonstracao_um_clique: true,
+      origem_usada: origem,
+      call_id: detail.call_id || null,
+      destino_enviado: detail.destino_enviado,
+      widevoice_raw: detail.widevoice_raw,
+      widevoice_flat: detail.widevoice_flat,
+      proximo_passo:
+        'O telefone destino deve tocar / o ramal da origem participa segundo a central. Para libertar ramal usa «Liberar ramal» no HTML.',
+    },
+    'Demonstração WideVoice: CHAMADA OK.',
     200
   );
 });
@@ -93,6 +216,8 @@ const postStatusramais = catchAsyncRoute(async (req, res) => {
 
 module.exports = {
   pingLab,
+  getLabDefaults,
+  postRunDemo,
   postClicktocall,
   postLiberarramal,
   postStatusramais,

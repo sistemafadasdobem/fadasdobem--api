@@ -1,5 +1,5 @@
 /**
- * Utilizadores e perfis mínimos para homologação Agora / sessões VIDEO.
+ * Utilizadores e perfis mínimos para homologação (sessões + laboratório Intelbras WideVoice).
  * Idempotente — relançar não duplica (e-mail único).
  *
  * Uso: `npm run seed:homolog`
@@ -21,6 +21,9 @@ const HOMOLOG_EMAIL = `${process.env.SEED_HOMOLOG_EMAIL || 'homolog@fadasdobem.t
 const HOMOLOG_PASSWORD = `${process.env.SEED_HOMOLOG_PASSWORD || 'Homolog@2026'}`;
 const SPECIALIST_EMAIL = `${process.env.SEED_HOMOLOG_SPECIALIST_EMAIL || 'tarologa.homolog@fadasdobem.test'}`.trim().toLowerCase();
 const SPECIALIST_PASSWORD = `${process.env.SEED_HOMOLOG_SPECIALIST_PASSWORD || 'TarologaHomolog@2026'}`;
+const HOMOLOG_INTELBRAS_RAMAL = `${process.env.SEED_HOMOLOG_INTELBRAS_RAMAL || process.env.INTELBRAS_LAB_ORIGEM_RAMAL || '2002'}`.trim();
+/** Telefone só para disco de demo no HTML (troca pelo número real onde queres receber testes). */
+const HOMOLOG_CLIENT_PHONE = `${process.env.SEED_HOMOLOG_CLIENT_PHONE || process.env.INTELBRAS_LAB_DESTINO || '11999887766'}`.trim();
 const COST = AUTH_CONFIG.bcryptCostPassword || 12;
 
 async function ensureUser(email, password, role) {
@@ -82,8 +85,16 @@ async function main() {
       display_name: 'Taróloga Homologação',
       status: 'ONLINE',
       accepts_queue_any: true,
+      intelbras_ramal: HOMOLOG_INTELBRAS_RAMAL,
     },
   });
+  await specProf.update({ intelbras_ramal: HOMOLOG_INTELBRAS_RAMAL }).catch(() => {});
+
+  const phoneDigits = HOMOLOG_CLIENT_PHONE.replace(/\D/g, '');
+  if (phoneDigits.length >= 10) {
+    await clientUser.update({ phone: phoneDigits });
+    console.log('[seed:homolog] User cliente.phone (demo WideVoice) · termina em ·' + phoneDigits.slice(-4));
+  }
 
   await LedgerAccount.findOrCreate({
     where: { client_id: clientProf.id, account_type: 'CLIENT_WALLET' },
@@ -104,6 +115,10 @@ async function main() {
   console.log('  Senha taróloga:', SPECIALIST_PASSWORD);
   console.log('');
   console.log('  specialist_id (POST /sessions):', specProf.id);
+  console.log('  intelbras_ramal (troca no .env SEED_* se a Intelbras outro ramal):', HOMOLOG_INTELBRAS_RAMAL);
+  console.log(
+    '  demo destino WideVoice · via cliente.phone ou INTELBRAS_LAB_DESTINO (troca pelo número real onde queres atender)'
+  );
   console.log('');
   await sequelize.close();
 }

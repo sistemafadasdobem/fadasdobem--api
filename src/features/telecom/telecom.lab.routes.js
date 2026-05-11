@@ -9,6 +9,8 @@ const router = Router();
 router.use(requireTelecomLab);
 
 router.get('/lab/ping', telecomLabController.pingLab);
+router.get('/lab/defaults', telecomLabController.getLabDefaults);
+router.post('/lab/run-demo', telecomLabController.postRunDemo);
 router.post('/lab/clicktocall', telecomLabController.postClicktocall);
 router.post('/lab/liberarramal', telecomLabController.postLiberarramal);
 router.post('/lab/statusramais', telecomLabController.postStatusramais);
