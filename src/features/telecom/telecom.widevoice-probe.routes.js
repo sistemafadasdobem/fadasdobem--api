@@ -40,6 +40,9 @@ const getWidevoicePublicCheck = catchAsyncRoute(async (_req, res) => {
       0,
       520
     );
+  } else if (out.ok && out.resposta_null_literal) {
+    mensagem =
+      'Resposta foi só `null` JSON (não há lista de ramais): confirme URL/host da `api.php` com a Intelbras.';
   } else if (out.ok && out.body_sem_conteudo) {
     mensagem =
       'WideVoice devolveu HTTP 200 mas sem corpo JSON útil — ver widevoice_transport, hint_pt e se a api.php/resposta estão bloqueadas por proxy.';

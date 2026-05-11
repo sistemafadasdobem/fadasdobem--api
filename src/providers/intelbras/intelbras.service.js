@@ -123,6 +123,10 @@ function parseWideVoiceBodyText(rawText) {
   if (!trimmed.length) {
     return { parsed: null, body_effectively_empty_after_trim: true };
   }
+  /** Servidor pode devolver o literal JSON `null` (4 caracteres), inválido para statusramais. */
+  if (trimmed === 'null') {
+    return { parsed: null, body_effectively_empty_after_trim: false, literal_was_json_null: true };
+  }
   try {
     const parsed = JSON.parse(trimmed);
     return { parsed, body_effectively_empty_after_trim: false };
@@ -210,6 +214,23 @@ function interpretStatusRamaisProbe(httpStatus, raw, flat, transport = {}) {
       body_sem_conteudo: true,
       hint_pt:
         'HTTP 200 com corpo vazio: confirme a URL (/api.php), proxy/WAF na frente do host Intelbras ou se o método statusramais está activo na sua instância.',
+    };
+  }
+
+  if (
+    httpStatus >= 200 &&
+    httpStatus < 300 &&
+    (raw === null || raw === undefined) &&
+    transport.literal_was_json_null === true
+  ) {
+    return {
+      probe: 'statusramais',
+      central_status_message: null,
+      central_auth_problem: false,
+      ramal_snapshot_present: false,
+      resposta_null_literal: true,
+      hint_pt:
+        'Corpo `null` literal (4 bytes) com Content-Type `text/html`: **não** é a resposta JSON de `statusramais` — não há lista de ramais nem dá para dizer se algum ramal está activo. Normalmente indica URL/host errado, redirecção, ou `api.php` que não serve a API WideVoice nesse domínio; confirme com a Intelbras hostname e path exactos da instância.',
     };
   }
 
@@ -370,15 +391,26 @@ async function wideVoiceAction(acao, extra = {}) {
   });
 
   const textBuffer = res.data == null ? '' : String(res.data);
-  const { parsed, body_effectively_empty_after_trim } = parseWideVoiceBodyText(textBuffer);
+  const parseOut = parseWideVoiceBodyText(textBuffer);
+  const parsed = parseOut.parsed;
+  const body_effectively_empty_after_trim = parseOut.body_effectively_empty_after_trim;
+
   const flat = flattenWideVoiceResponse(parsed);
 
-  /** @type {{ body_length: number; content_type: string|null; body_effectively_empty_after_trim: boolean }} */
+  /** @type {{ body_length: number; content_type: string|null; body_effectively_empty_after_trim: boolean; response_text_trimmed_preview?: string; literal_was_json_null?: boolean }} */
   const _transport = {
     body_length: Buffer.byteLength(textBuffer, 'utf8'),
     content_type: res.headers?.['content-type'] ? String(res.headers['content-type']) : null,
     body_effectively_empty_after_trim: Boolean(body_effectively_empty_after_trim),
   };
+  if (parseOut.literal_was_json_null === true) {
+    _transport.literal_was_json_null = true;
+  }
+
+  if (Buffer.byteLength(textBuffer, 'utf8') <= 2048) {
+    const trimmedForPreview = textBuffer.replace(/^\ufeff/, '').trim();
+    _transport.response_text_trimmed_preview = JSON.stringify(trimmedForPreview.slice(0, 180));
+  }
 
   return { status: res.status, raw: parsed, flat, _transport };
 }
