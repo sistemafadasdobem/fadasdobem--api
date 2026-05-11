@@ -157,7 +157,7 @@ const postRunDemo = catchAsyncRoute(async (req, res) => {
     destino_discado_servidor: detail.destino_enviado,
     origem_ramal: origem,
     dica_nao_tocou:
-      'Se `CHAMADA OK` mas o 71… não tocou: confirma com Intelbras o dígito exato de `destino` (trunk 011), registo do ramal na origem e IP da VPS.',
+      'Se `CHAMADA OK` mas o telefone não tocou: verificar na PBX registo do ramal de origem, rota de saída para o DDD do destino, e com a Intelbras o formato exato exigido no campo `destino` do `clicktocall` (e se há parâmetros extra).',
   });
 
   return responderSucesso(

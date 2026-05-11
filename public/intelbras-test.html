@@ -193,12 +193,12 @@
     <legend>Click-to-call (vídeo/voz pela central)</legend>
     <p class="hint">
       <strong>Origem</strong> = número de <strong>ramal</strong> da taróloga na PABX WideVoice (não é o UUID na BD da app).
-      Vem da Intelbras ou do painel do ramal (ex.: <code>2002</code>).
+      Vem da Intelbras ou do painel do ramal (ex.: <code>0464</code>).
       <strong>Destino</strong> = telefone do cliente com DDD (<code>11999887766</code>, <code>5511999887766</code> ou formato com espaços/travessões —
       o servidor usa só dígitos e aplica DDD local 11 vs prefixo <code>011</code> para outros DDD).
     </p>
     <label>Origem — ramal na central WideVoice (<code>origem</code>)</label>
-    <input type="text" id="origem" placeholder="Ramal ex.: 2002" autocomplete="off" />
+    <input type="text" id="origem" placeholder="Ramal ex.: 0464" autocomplete="off" />
     <label>Destino — telefone cliente (<code>destino</code>)</label>
     <input type="text" id="destino" placeholder="11999887766 ou 4899887766 ou +55 48 98877-6655" autocomplete="off" />
     <button type="button" id="btnCall">Iniciar chamada (clicktocall)</button>
