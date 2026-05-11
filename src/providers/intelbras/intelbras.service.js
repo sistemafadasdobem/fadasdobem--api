@@ -450,6 +450,17 @@ async function clickToCall(p) {
 
   if (p?.formatDestino !== false) {
     destino = dialPlan.formatBrazilDestinationForWideVoice(destino);
+  } else {
+    /** Lab / suporte: envia apenas dígitos sem regra BR — aceita ou rejeita a WideVoice. */
+    destino = dialPlan.onlyDigits(destino);
+    if (!`${destino}`.trim()) {
+      throw new AppError(
+        'clicktocall com destino «bruto»: após tirar caracteres não numéricos ficou vazio.',
+        400,
+        { campo: 'destino', use_format_destino_false: true },
+        true
+      );
+    }
   }
 
   const { status, raw, flat } = await wideVoiceAction('clicktocall', { origem, destino });
@@ -489,6 +500,16 @@ async function clickToCallDetailed(p) {
 
   if (p?.formatDestino !== false) {
     destino = dialPlan.formatBrazilDestinationForWideVoice(destino);
+  } else {
+    destino = dialPlan.onlyDigits(destino);
+    if (!`${destino}`.trim()) {
+      throw new AppError(
+        'clicktocall com destino «bruto»: após tirar caracteres não numéricos ficou vazio.',
+        400,
+        { campo: 'destino', use_format_destino_false: true },
+        true
+      );
+    }
   }
 
   const { origin } = ensureConfigured();
@@ -499,6 +520,7 @@ async function clickToCallDetailed(p) {
       origem,
       /** Número exatamente como enviado no JSON `destino` (DDD local vs `011`). */
       destino,
+      ...(p?.formatDestino === false ? { normalizacao_brasil: 'desligada_somente_digitos' } : {}),
     });
   }
 

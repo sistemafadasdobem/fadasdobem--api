@@ -102,11 +102,14 @@ const postRunDemo = catchAsyncRoute(async (req, res) => {
   }
 
   const dLen = onlyDigits(destino).length;
-  if (!destino || dLen < 10) {
+  const minDig = formatDestino ? 10 : 1;
+  if (!destino || dLen < minDig) {
     throw new AppError(
-      'Telefone destino incompleto. Defina INTELBRAS_LAB_DESTINO ou SEED_HOMOLOG_CLIENT_PHONE (+ seed) até ter ≥10 dígitos.',
+      formatDestino
+        ? 'Telefone destino incompleto. Defina INTELBRAS_LAB_DESTINO ou SEED_HOMOLOG_CLIENT_PHONE (+ seed) até ter ≥10 dígitos.'
+        : 'Em modo destino bruto (`skip_format` / `format_destino:false`) é preciso pelo menos 1 dígito em destino.',
       422,
-      { digitos_lidos: dLen },
+      { digitos_lidos: dLen, format_destino: formatDestino },
       true
     );
   }

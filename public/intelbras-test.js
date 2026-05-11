@@ -349,8 +349,14 @@
         return;
       }
       try {
-        log('POST /telecom/lab/clicktocall ' + pretty({ origem: origem, destino: destino }));
-        var pack = await fetchJson('POST', '/telecom/lab/clicktocall', { origem: origem, destino: destino });
+        var rawDest = $('chkRawDestino') && $('chkRawDestino').checked;
+        var bodyCall = {
+          origem: origem,
+          destino: destino,
+          format_destino: rawDest ? false : true,
+        };
+        log('POST /telecom/lab/clicktocall ' + pretty(bodyCall));
+        var pack = await fetchJson('POST', '/telecom/lab/clicktocall', bodyCall);
         log('HTTP ' + pack.res.status + '\n' + pretty(pack.json));
         if (pack.json && pack.json.sucesso && pack.json.dados) {
           var id = pack.json.dados.call_id;

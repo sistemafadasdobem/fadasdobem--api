@@ -207,6 +207,10 @@
       Variantes (env <code>INTELBRAS_LAB_DESTINO_VARIANTS</code>):
       <span id="destinoVariantsBtns" style="display: inline-flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; vertical-align: middle"></span>
     </p>
+    <label class="hint" style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px">
+      <input type="checkbox" id="chkRawDestino" />
+      <span>Destino em bruto (só tira espaços/letras · <code>format_destino:false</code>) — a Intelbras valida na <code>api.php</code>, não o filtro Brasil do servidor.</span>
+    </label>
     <button type="button" id="btnCall">Iniciar chamada (clicktocall)</button>
     <button type="button" class="warn" id="btnRelease">Liberar ramal</button>
     <button type="button" class="secondary" id="btnStatus">Consultar status ramais (statusramais)</button>
