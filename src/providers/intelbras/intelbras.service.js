@@ -20,6 +20,12 @@ const DEFAULT_TIMEOUT_MS = Math.min(
   Math.max(3000, parseInt(String(process.env.INTELBRAS_REST_TIMEOUT_MS || '15000'), 10) || 15000)
 );
 
+/** Logs em consola (`clicktocall` / labouratório): `false` silencia payloads no terminal PRD */
+function intelbrasWideVoiceConsoleLogEnabled() {
+  const v = `${process.env.INTELBRAS_LAB_CONSOLE_LOG || 'true'}`.trim().toLowerCase();
+  return v !== 'false' && v !== '0' && v !== 'off';
+}
+
 /** @type {import('axios').AxiosInstance|null} */
 let http = null;
 
@@ -192,6 +198,17 @@ async function clickToCallDetailed(p) {
     destino = dialPlan.formatBrazilDestinationForWideVoice(destino);
   }
 
+  const { origin } = ensureConfigured();
+  const apiPath = getApiPath();
+  if (intelbrasWideVoiceConsoleLogEnabled()) {
+    console.log('[WideVoice:clicktocall] pedido → POST', `${origin}${apiPath}`, {
+      acao: 'clicktocall',
+      origem,
+      /** Número exatamente como enviado no JSON `destino` (DDD local vs `011`). */
+      destino,
+    });
+  }
+
   const { status, raw, flat } = await wideVoiceAction('clicktocall', { origem, destino });
 
   const bizOk = status >= 200 && status < 300 && isTupleSuccess(flat);
@@ -203,6 +220,29 @@ async function clickToCallDetailed(p) {
     flat.callid ||
     flat.CallId ||
     null;
+
+  if (intelbrasWideVoiceConsoleLogEnabled()) {
+    const peek = Array.isArray(raw)
+      ? raw.slice(0, 14)
+      : typeof raw === 'object' && raw
+        ? raw
+        : String(raw).slice(0, 280);
+    console.log('[WideVoice:clicktocall] resposta', {
+      http_status: status,
+      success_negocio: bizOk,
+      status_tuple: flat.Status ?? flat.status ?? null,
+      call_id: id ? String(id) : null,
+      mensagem_flat: flat.Mensagem || flat.mensagem || null,
+      raw_compacto: peek,
+    });
+    if (bizOk) {
+      console.log(
+        '[WideVoice:clicktocall] A central aceitou o comando. Se o telefone **não tocou**: (1) rota/roaming do destino · (2) `origem` precisa estar livre/register na PBX · (3) formato `destino` que a Intelbras espera pode diferir do nosso normalize — pergunte ao suporte · (4) IP egresso da VPS deve estar liberado.'
+      );
+    } else {
+      console.warn('[WideVoice:clicktocall] falha negócio ou HTTP', { http_status: status });
+    }
+  }
 
   return {
     success: bizOk,

@@ -4,6 +4,12 @@ const AppError = require('../../utils/AppError');
 const { responderSucesso } = require('../../utils/response.util');
 const { catchAsyncRoute } = require('../../utils/catchAsync.util');
 const intelbrasService = require('../../providers/intelbras/intelbras.service');
+
+/** Fluxo laboratório no terminal Docker (sem token/senhas). */
+function labDiag(payload) {
+  console.log('[telecom:lab]', payload);
+}
+
 const {
   resolveIntelbrasLabPair,
   pairIsReady,
@@ -106,6 +112,14 @@ const postRunDemo = catchAsyncRoute(async (req, res) => {
     );
   }
 
+  labDiag({
+    evento: 'run-demo → wideVoice.clicktocall',
+    origem_ramal: origem,
+    digitos_destino_informados: onlyDigits(destino).length,
+    aplicar_intelbrasDDD: Boolean(formatDestino),
+    INTELBRAS_DIAL_LOCAL_DDD: `${process.env.INTELBRAS_DIAL_LOCAL_DDD || '11'}`.trim(),
+  });
+
   const detail = await intelbrasService.clickToCallDetailed({
     origem,
     destino,
@@ -113,6 +127,12 @@ const postRunDemo = catchAsyncRoute(async (req, res) => {
   });
 
   if (!detail.success) {
+    labDiag({
+      evento: 'run-demo falhou · resposta WideVoice',
+      http_status_widevoice: detail.http_status,
+      destino_discado_servidor: detail.destino_enviado,
+      status_flat: detail.widevoice_flat?.Status || detail.widevoice_flat?.status || null,
+    });
     const msg =
       `${detail.widevoice_flat?.Mensagem ||
         detail.widevoice_flat?.mensagem ||
@@ -128,6 +148,15 @@ const postRunDemo = catchAsyncRoute(async (req, res) => {
       http_status: detail.http_status,
     }, true);
   }
+
+  labDiag({
+    evento: 'run-demo sucesso',
+    call_id: detail.call_id || null,
+    destino_discado_servidor: detail.destino_enviado,
+    origem_ramal: origem,
+    dica_nao_tocou:
+      'Se `CHAMADA OK` mas o 71… não tocou: confirma com Intelbras o dígito exato de `destino` (trunk 011), registo do ramal na origem e IP da VPS.',
+  });
 
   return responderSucesso(
     res,
@@ -155,6 +184,8 @@ const postClicktocall = catchAsyncRoute(async (req, res) => {
     req.body?.formatDestino !== false &&
     req.body?.skip_format !== true;
 
+  labDiag({ evento: 'POST lab/clicktocall', origem_ramal: origem });
+
   const detail = await intelbrasService.clickToCallDetailed({
     origem,
     destino,
@@ -162,6 +193,11 @@ const postClicktocall = catchAsyncRoute(async (req, res) => {
   });
 
   if (!detail.success) {
+    labDiag({
+      evento: 'lab/clicktocall falhou',
+      http_status_widevoice: detail.http_status,
+      destino_discado_servidor: detail.destino_enviado,
+    });
     const msg =
       `${detail.widevoice_flat?.Mensagem ||
         detail.widevoice_flat?.mensagem ||
