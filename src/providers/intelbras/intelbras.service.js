@@ -122,6 +122,129 @@ function isTupleSuccess(map) {
   );
 }
 
+function maskWideVoiceLogin(login) {
+  const s = `${login || ''}`.trim();
+  if (!s) return null;
+  if (s.length <= 8) return `${s.slice(0, 2)}***`;
+  return `${s.slice(0, 4)}…${s.slice(-4)}`;
+}
+
+/**
+ * Preview seguro das configs usadas pela integração (sem token).
+ */
+function peekWideVoiceConfig() {
+  const origin = `${getBaseOrigin() || ''}`.trim();
+  const { login, token } = getCredentials();
+  return {
+    post_url_preview: origin ? `${origin.replace(/\/+$/, '')}${getApiPath()}` : null,
+    login_masked: maskWideVoiceLogin(login),
+    token_present: Boolean(`${token || ''}`.trim()),
+    timeout_ms: DEFAULT_TIMEOUT_MS,
+    dial_plan: {
+      local_ddd: `${process.env.INTELBRAS_DIAL_LOCAL_DDD || '11'}`.trim(),
+      use_011_for_non_local: dialPlan.use011TrunkForNonLocalDdd(),
+      prepend_zero_non_local: dialPlan.clickToCallPrependLeadingZeroForNonLocal(),
+    },
+  };
+}
+
+/** @returns {{ probe: string, central_status_message: string|null, central_auth_problem: boolean, ramal_snapshot_present: boolean, hint_pt: string }} */
+function interpretStatusRamaisProbe(httpStatus, raw, flat) {
+  const central =
+    `${flat?.Status ?? flat?.status ?? ''}`.trim() ||
+    (Array.isArray(raw) && raw.length >= 2 ? `${raw[1]}` : '').trim() ||
+    null;
+
+  const bundle = `${central || ''}${JSON.stringify(raw || []) || ''}`
+    .toLowerCase()
+    .replace(/\\/g, '');
+
+  const loginAuthFail = /login.*senha|senha.*invalid|invalido/.test(bundle) || /erro de protocolo/.test(bundle);
+
+  /** Sucesso esperado na doc: array de objetos com campo Ramal */
+  const looksLikeRamalRows =
+    Array.isArray(raw) &&
+    raw.length > 0 &&
+    typeof raw[0] === 'object' &&
+    raw[0] !== null &&
+    ('Ramal' in raw[0] || 'ramal' in raw[0]);
+
+  const hint =
+    loginAuthFail
+      ? 'Intelbras agrupa falha neste erro: revise token/login com o suporte e confirme o IP de egresso onde corre esta API está cadastrado na instância.'
+      : looksLikeRamalRows
+        ? 'Resposta típica de statusramais: credencial e IP provavelmente corretos para esta chamada.'
+        : httpStatus < 200 || httpStatus >= 300
+          ? 'HTTP não-OK recebido do host WideVoice.'
+          : 'Interpretação ambígua — inspecionar widevoice_raw.';
+
+  return {
+    probe: 'statusramais',
+    central_status_message: central || null,
+    central_auth_problem: Boolean(loginAuthFail),
+    ramal_snapshot_present: Boolean(looksLikeRamalRows),
+    hint_pt: hint,
+  };
+}
+
+/**
+ * Chamada só de leitura à central (`statusramais`) usando credenciais do ambiente —
+ * útil para validar outbound (IP egresso da API) igual ao seu `curl`.
+ */
+async function probeWideVoiceFromEnv() {
+  const meta = peekWideVoiceConfig();
+  if (!`${getBaseOrigin() || ''}`.trim() || !meta.token_present) {
+    return {
+      ok: false,
+      code: 'not_configured',
+      mensagem_detail:
+        'Defina INTELBRAS_WIDEVOICE_BASE_URL, INTELBRAS_WIDEVOICE_LOGIN e INTELBRAS_WIDEVOICE_TOKEN (ou INTELBRAS_REST_*).',
+      meta,
+    };
+  }
+
+  try {
+    ensureConfigured();
+  } catch (e) {
+    return {
+      ok: false,
+      code: 'not_configured',
+      mensagem_detail: String(e?.message || e),
+      meta,
+    };
+  }
+
+  let status;
+  let raw;
+  let flat;
+
+  try {
+    const r = await statusRamais({});
+    ({ status, raw, flat } = r);
+  } catch (e) {
+    return {
+      ok: false,
+      code: 'request_failed',
+      mensagem_detail: String(e?.message || e),
+      meta,
+      /** Erros axios costumam trazer causa legível ao operador */
+      causa: typeof e?.code === 'string' ? e.code : null,
+    };
+  }
+
+  const interpretation = interpretStatusRamaisProbe(status, raw, flat);
+
+  return {
+    ok: true,
+    meta,
+    http_status_widevoice: status,
+    widevoice_ok: interpretation.ramal_snapshot_present && !interpretation.central_auth_problem,
+    widevoice_raw: raw,
+    widevoice_flat: flat,
+    ...interpretation,
+  };
+}
+
 /**
  * @param {string} acao
  * @param {Record<string, unknown>} [extra]
@@ -361,6 +484,8 @@ async function hangupSessionMedia(sessionRow, specialistHint = {}) {
 module.exports = {
   getBaseOrigin,
   getApiPath,
+  peekWideVoiceConfig,
+  probeWideVoiceFromEnv,
   wideVoiceAction,
   clickToCall,
   clickToCallDetailed,

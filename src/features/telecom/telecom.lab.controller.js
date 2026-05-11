@@ -32,6 +32,8 @@ const pingLab = catchAsyncRoute(async (_req, res) => {
       widevoice_base_preview:
         configured && origin.length > 64 ? `${origin.slice(0, 60)}…` : origin || null,
       api_path: intelbrasService.getApiPath(),
+      widevoice_live_check_hint:
+        'GET /api/v1/telecom/widevoice-check — probe público (statusramais com .env; sem segredo de laboratório).',
     },
     'Laboratório WideVoice ativo.',
     200
