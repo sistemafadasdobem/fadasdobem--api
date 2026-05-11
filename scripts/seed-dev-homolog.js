@@ -21,7 +21,7 @@ const HOMOLOG_EMAIL = `${process.env.SEED_HOMOLOG_EMAIL || 'homolog@fadasdobem.t
 const HOMOLOG_PASSWORD = `${process.env.SEED_HOMOLOG_PASSWORD || 'Homolog@2026'}`;
 const SPECIALIST_EMAIL = `${process.env.SEED_HOMOLOG_SPECIALIST_EMAIL || 'tarologa.homolog@fadasdobem.test'}`.trim().toLowerCase();
 const SPECIALIST_PASSWORD = `${process.env.SEED_HOMOLOG_SPECIALIST_PASSWORD || 'TarologaHomolog@2026'}`;
-const HOMOLOG_INTELBRAS_RAMAL = `${process.env.SEED_HOMOLOG_INTELBRAS_RAMAL || process.env.INTELBRAS_LAB_ORIGEM_RAMAL || '0464'}`.trim();
+const HOMOLOG_INTELBRAS_RAMAL = `${process.env.SEED_HOMOLOG_INTELBRAS_RAMAL || process.env.INTELBRAS_LAB_ORIGEM_RAMAL || '0559'}`.trim();
 /** Telefone só para disco de demo no HTML (troca pelo número real onde queres receber testes). */
 const HOMOLOG_CLIENT_PHONE = `${process.env.SEED_HOMOLOG_CLIENT_PHONE || process.env.INTELBRAS_LAB_DESTINO || '11999887766'}`.trim();
 const COST = AUTH_CONFIG.bcryptCostPassword || 12;
